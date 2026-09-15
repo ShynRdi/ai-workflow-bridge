@@ -4,12 +4,27 @@ import re
 import shlex
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
+
+
+RISK_ORDER = {"R0": 0, "R1": 1, "R2": 2, "R3": 3, "R4": 4}
 
 
 @dataclass(frozen=True)
 class PolicyDecision:
     level: str  # low | approval | blocked
     reason: str
+    risk_level: str = "R2"
+
+
+@dataclass(frozen=True)
+class EffectiveRisk:
+    level: str  # low | approval | blocked
+    risk_level: str
+    local_risk_level: str
+    llm_risk_level: str | None
+    reason: str
+    escalated_by_llm: bool = False
 
 
 BLOCK_PATTERNS = [
@@ -24,14 +39,14 @@ BLOCK_PATTERNS = [
 ]
 
 APPROVAL_PATTERNS = [
-    (r"\bgit\s+push\b", "publishes changes to a remote repository"),
-    (r"\bgit\s+(merge|rebase|cherry-pick)\b", "changes git history or branch state"),
-    (r"\b(pip|pip3|uv|poetry|npm|pnpm|yarn|bun)\s+(install|add|remove|update|upgrade)\b", "changes dependencies"),
-    (r"\b(apt|apt-get|dnf|yum|pacman|brew)\s+", "changes system packages"),
-    (r"\bdocker\s+(compose\s+)?(down|rm|rmi|system\s+prune|volume\s+rm)\b", "can remove containers/images/volumes"),
-    (r"\b(alembic|django-admin|manage\.py)\b.*\b(migrate|upgrade|downgrade)\b", "changes database schema"),
-    (r"\b(curl|wget)\b[^\n]*\|\s*(sh|bash)\b", "executes remote content directly"),
-    (r"\bssh\b|\bscp\b|\brsync\b[^\n]*:", "accesses another machine"),
+    (r"\bgit\s+push\b", "publishes changes to a remote repository", "R3"),
+    (r"\bgit\s+(merge|rebase|cherry-pick)\b", "changes git history or branch state", "R2"),
+    (r"\b(pip|pip3|uv|poetry|npm|pnpm|yarn|bun)\s+(install|add|remove|update|upgrade)\b", "changes dependencies", "R2"),
+    (r"\b(apt|apt-get|dnf|yum|pacman|brew)\s+", "changes system packages", "R3"),
+    (r"\bdocker\s+(compose\s+)?(down|rm|rmi|system\s+prune|volume\s+rm)\b", "can remove containers/images/volumes", "R3"),
+    (r"\b(alembic|django-admin|manage\.py)\b.*\b(migrate|upgrade|downgrade)\b", "changes database schema", "R3"),
+    (r"\b(curl|wget)\b[^\n]*\|\s*(sh|bash)\b", "executes remote content directly", "R3"),
+    (r"\bssh\b|\bscp\b|\brsync\b[^\n]*:", "accesses another machine", "R3"),
 ]
 
 SENSITIVE_PATH_PATTERNS = (
@@ -55,6 +70,10 @@ LOW_PREFIXES = (
 )
 
 SAFE_PRINTENV_KEYS = {"PATH", "HOME", "SHELL", "USER", "LOGNAME", "PWD", "LANG", "LC_ALL", "NVM_DIR"}
+
+
+def _decision(level: str, reason: str, risk_level: str) -> PolicyDecision:
+    return PolicyDecision(level=level, reason=reason, risk_level=risk_level)
 
 
 def _sensitive_path(command: str) -> bool:
@@ -114,36 +133,85 @@ def classify(command: str, workspace_root: str = "") -> PolicyDecision:
     lower = normalized.lower()
     for pattern, reason in BLOCK_PATTERNS:
         if re.search(pattern, lower):
-            return PolicyDecision("blocked", reason)
+            return _decision("blocked", reason, "R4")
     if _sensitive_path(command):
-        return PolicyDecision("blocked", "command references a protected credential or account-data path")
+        return _decision("blocked", "command references a protected credential or account-data path", "R4")
     if lower == "env" or lower.startswith("env "):
-        return PolicyDecision("approval", "environment output may contain secrets")
+        return _decision("approval", "environment output may contain secrets", "R3")
     if lower.startswith("printenv"):
         parts = normalized.split(); keys = parts[1:]
         if not keys or any(key not in SAFE_PRINTENV_KEYS for key in keys):
-            return PolicyDecision("approval", "printing arbitrary environment variables may expose secrets")
-        return PolicyDecision("low", "prints allowlisted non-secret environment metadata")
+            return _decision("approval", "printing arbitrary environment variables may expose secrets", "R3")
+        return _decision("low", "prints allowlisted non-secret environment metadata", "R0")
     if lower.startswith(("echo ", "printf ")):
         variables = set(re.findall(r"\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?", command))
         if variables and not variables.issubset(SAFE_PRINTENV_KEYS):
-            return PolicyDecision("approval", "shell expansion may expose environment secrets")
+            return _decision("approval", "shell expansion may expose environment secrets", "R3")
         if variables:
-            return PolicyDecision("low", "prints allowlisted environment metadata")
-        return PolicyDecision("low", "prints static text")
-    for pattern, reason in APPROVAL_PATTERNS:
+            return _decision("low", "prints allowlisted environment metadata", "R0")
+        return _decision("low", "prints static text", "R0")
+    for pattern, reason, risk_level in APPROVAL_PATTERNS:
         if re.search(pattern, lower):
-            return PolicyDecision("approval", reason)
+            return _decision("approval", reason, risk_level)
     if _secretish_workspace_reference(command):
-        return PolicyDecision("approval", "command references a file that commonly contains secrets")
+        return _decision("approval", "command references a file that commonly contains secrets", "R3")
     if lower.startswith("find ") and re.search(r"(?:^|\s)-(?:delete|exec|execdir|ok|okdir)(?:\s|$)", lower):
-        return PolicyDecision("approval", "find action can modify files or execute commands")
+        return _decision("approval", "find action can modify files or execute commands", "R2")
     if re.search(r"(?:&&|\|\||[;|<>`]|\$\(|[\r\n])", command):
-        return PolicyDecision("approval", "compound shell syntax requires review")
+        return _decision("approval", "compound shell syntax requires review", "R2")
     if lower.startswith(LOW_PREFIXES):
         if _path_escapes_workspace(command, workspace_root):
-            return PolicyDecision("approval", "command references a path outside the configured workspace")
-        return PolicyDecision("low", "read-only verification/test command")
+            return _decision("approval", "command references a path outside the configured workspace", "R2")
+        testish = lower.startswith(("pytest", "python -m pytest", "python3 -m pytest", "ruff ", "mypy ", "pyright ", "eslint ", "npm test", "npm run test", "pnpm test", "yarn test", "make test", "make check"))
+        return _decision("low", "read-only verification/test command", "R1" if testish else "R0")
     if lower.startswith("./") or lower.startswith("bash ") or lower.startswith("sh "):
-        return PolicyDecision("approval", "local script execution can modify the workspace")
-    return PolicyDecision("approval", "command is not in the low-risk allowlist")
+        return _decision("approval", "local script execution can modify the workspace", "R2")
+    return _decision("approval", "command is not in the low-risk allowlist", "R2")
+
+
+def _llm_level(assessment: Any) -> str | None:
+    value = getattr(assessment, "level", None)
+    if value is None and isinstance(assessment, dict):
+        value = assessment.get("level")
+    value = str(value or "").upper().strip()
+    return value if value in RISK_ORDER else None
+
+
+def merge_risk(local: PolicyDecision, llm_assessment: Any = None) -> EffectiveRisk:
+    llm = _llm_level(llm_assessment)
+    local_rank = RISK_ORDER.get(local.risk_level, 2)
+    llm_rank = RISK_ORDER.get(llm, -1) if llm else -1
+    effective_rank = max(local_rank, llm_rank)
+    effective_risk = next(level for level, rank in RISK_ORDER.items() if rank == effective_rank)
+    escalated = llm is not None and llm_rank > local_rank
+
+    if local.level == "blocked" or effective_risk == "R4":
+        level = "blocked"
+    elif local.level == "approval" or effective_rank >= RISK_ORDER["R2"]:
+        level = "approval"
+    else:
+        level = "low"
+
+    parts = [f"Local policy: {local.risk_level} — {local.reason}"]
+    if llm:
+        factors = getattr(llm_assessment, "factors", None)
+        if factors is None and isinstance(llm_assessment, dict):
+            factors = llm_assessment.get("factors")
+        factor_text = "; ".join(str(x) for x in (factors or [])[:4])
+        llm_text = f"LLM assessment: {llm}"
+        if factor_text:
+            llm_text += f" — {factor_text}"
+        parts.append(llm_text)
+    else:
+        parts.append("LLM assessment: unavailable/invalid; local policy remains authoritative")
+    if escalated:
+        parts.append(f"Effective risk escalated to {effective_risk}; LLM assessments may only raise risk")
+
+    return EffectiveRisk(
+        level=level,
+        risk_level=effective_risk,
+        local_risk_level=local.risk_level,
+        llm_risk_level=llm,
+        reason="\n".join(parts),
+        escalated_by_llm=escalated,
+    )
