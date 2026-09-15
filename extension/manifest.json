@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "AI Workflow Bridge",
-  "version": "0.2.1",
-  "description": "Guarded multi-LLM web workflow runner with approvals, roadmap controls, rate limits, and account-safe local execution.",
+  "version": "0.2.2",
+  "description": "Guarded multi-LLM web workflow runner with approvals, roadmap controls, rate limits, semantic risk review, and account-safe local execution.",
   "minimum_chrome_version": "114",
   "permissions": [
     "storage",
