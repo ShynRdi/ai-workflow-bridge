@@ -8,6 +8,11 @@ from typing import Any
 START = "<<<AI_WORKFLOW>>>"
 END = "<<<END_AI_WORKFLOW>>>"
 VALID_RISK_LEVELS = {"R0", "R1", "R2", "R3", "R4"}
+RISK_DIMENSIONS = {
+    "filesystem", "network", "credentials", "database", "git_remote", "system",
+    "production", "irreversibility", "data_exfiltration",
+}
+MAX_COMMANDS_PER_CONTRACT = 100
 
 
 @dataclass
@@ -56,12 +61,16 @@ def _parse_risk_assessment(value: Any) -> RiskAssessment | None:
 
     factors = [str(x).strip() for x in (value.get("factors") or []) if str(x).strip()][:12]
     dimensions: dict[str, int] = {}
-    for key, raw in (value.get("dimensions") or {}).items() if isinstance(value.get("dimensions"), dict) else []:
+    raw_dimensions = value.get("dimensions")
+    for key, raw in raw_dimensions.items() if isinstance(raw_dimensions, dict) else []:
+        name = str(key)
+        if name not in RISK_DIMENSIONS:
+            continue
         try:
             score = int(raw)
         except (TypeError, ValueError):
             continue
-        dimensions[str(key)] = max(0, min(3, score))
+        dimensions[name] = max(0, min(3, score))
 
     reversible = value.get("reversible") if isinstance(value.get("reversible"), bool) else None
     return RiskAssessment(
@@ -87,29 +96,46 @@ def extract_contract(text: str) -> WorkflowContract | None:
     if int(data.get("version", 0)) != 1:
         raise ValueError("Unsupported AI_WORKFLOW contract version")
 
+    phase = str(data.get("phase") or "").strip()
+    stage = str(data.get("stage") or "").strip()
+    if not phase or not stage:
+        raise ValueError("AI_WORKFLOW contracts must include non-empty phase and stage")
+
+    raw_commands = data.get("commands") or []
+    if not isinstance(raw_commands, list):
+        raise ValueError("commands must be a list")
+    if len(raw_commands) > MAX_COMMANDS_PER_CONTRACT:
+        raise ValueError(f"commands exceeds maximum of {MAX_COMMANDS_PER_CONTRACT}")
+
     commands: list[CommandSpec] = []
-    for item in data.get("commands") or []:
+    for item in raw_commands:
         if isinstance(item, str):
-            commands.append(CommandSpec(cmd=item))
-        elif isinstance(item, dict) and item.get("cmd"):
+            cmd = item.strip()
+            if cmd:
+                commands.append(CommandSpec(cmd=cmd))
+        elif isinstance(item, dict) and str(item.get("cmd") or "").strip():
             commands.append(
                 CommandSpec(
-                    cmd=str(item["cmd"]),
+                    cmd=str(item["cmd"]).strip(),
                     purpose=str(item.get("purpose") or ""),
                     cwd=str(item.get("cwd") or "."),
                     risk_assessment=_parse_risk_assessment(item.get("risk_assessment")),
                 )
             )
 
+    downloads = data.get("downloads") or []
+    if not isinstance(downloads, list):
+        raise ValueError("downloads must be a list")
+
     return WorkflowContract(
         version=1,
-        phase=str(data.get("phase") or ""),
-        stage=str(data.get("stage") or ""),
+        phase=phase,
+        stage=stage,
         summary=str(data.get("summary") or ""),
         decision_required=bool(data.get("decision_required", False)),
         decision_reason=str(data.get("decision_reason") or ""),
         commands=commands,
         success_conditions=[str(x) for x in (data.get("success_conditions") or [])],
         next_step=str(data.get("next_step") or ""),
-        downloads=list(data.get("downloads") or []),
+        downloads=list(downloads),
     )

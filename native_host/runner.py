@@ -20,6 +20,12 @@ class CommandResult:
     stderr: str
 
 
+SAFE_ENV_KEYS = (
+    "PATH", "HOME", "USER", "LOGNAME", "SHELL", "LANG", "LC_ALL", "LC_CTYPE",
+    "TERM", "TMPDIR", "XDG_RUNTIME_DIR", "NVM_DIR", "VIRTUAL_ENV", "PYTHONPATH",
+)
+
+
 def _inside(root: Path, candidate: Path) -> bool:
     try:
         candidate.resolve().relative_to(root.resolve())
@@ -40,6 +46,14 @@ def resolve_cwd(workspace_root: str, relative: str) -> Path:
     return cwd
 
 
+def sanitized_environment(download_dir: str = "") -> dict[str, str]:
+    """Build a minimal child environment instead of inheriting credentials wholesale."""
+    env = {key: os.environ[key] for key in SAFE_ENV_KEYS if key in os.environ}
+    env["AI_WORKFLOW_BRIDGE"] = "1"
+    env["AI_WORKFLOW_DOWNLOAD_DIR"] = download_dir
+    return env
+
+
 def run_command(command: str, workspace_root: str, cwd: str, timeout: int, max_output_chars: int, download_dir: str = "") -> CommandResult:
     workdir = resolve_cwd(workspace_root, cwd)
     started = time.monotonic()
@@ -49,12 +63,12 @@ def run_command(command: str, workspace_root: str, cwd: str, timeout: int, max_o
         text=True,
         capture_output=True,
         timeout=timeout,
-        env={**os.environ, "AI_WORKFLOW_BRIDGE": "1", "AI_WORKFLOW_DOWNLOAD_DIR": download_dir},
+        env=sanitized_environment(download_dir),
     )
     duration = time.monotonic() - started
     stdout = redact_text(proc.stdout[-max_output_chars:])
     stderr = redact_text(proc.stderr[-max_output_chars:])
-    return CommandResult(command, str(workdir), proc.returncode, duration, stdout, stderr)
+    return CommandResult(redact_text(command), str(workdir), proc.returncode, duration, stdout, stderr)
 
 
 def git_snapshot(workspace_root: str) -> dict[str, Any]:
@@ -63,7 +77,7 @@ def git_snapshot(workspace_root: str) -> dict[str, Any]:
         return {"is_git": False}
 
     def run(*args: str) -> str:
-        proc = subprocess.run(["git", *args], cwd=str(root), text=True, capture_output=True, timeout=20)
-        return proc.stdout.strip()
+        proc = subprocess.run(["git", *args], cwd=str(root), text=True, capture_output=True, timeout=20, env=sanitized_environment())
+        return redact_text(proc.stdout.strip())
 
     return {"is_git": True, "head": run("rev-parse", "HEAD"), "branch": run("branch", "--show-current"), "status": run("status", "--short"), "diff_stat": run("diff", "--stat")}
