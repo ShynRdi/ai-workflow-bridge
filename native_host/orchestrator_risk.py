@@ -4,6 +4,7 @@ from dataclasses import asdict
 from typing import Any
 
 from policy import classify, merge_risk
+from redaction import redact_text
 from runner import git_snapshot, run_command
 
 
@@ -24,6 +25,7 @@ class RiskAwareExecutionMixin:
             spec = contract.commands[index]
             local = classify(spec.cmd, workspace)
             risk = merge_risk(local, spec.risk_assessment)
+            display_command = redact_text(spec.cmd)
 
             if spec.risk_assessment is not None or risk.escalated_by_llm:
                 llm = risk.llm_risk_level or "n/a"
@@ -32,14 +34,14 @@ class RiskAwareExecutionMixin:
                     "kind": "step",
                     "badge": "RISK",
                     "status": "validating",
-                    "text": f"{spec.cmd} → local {risk.local_risk_level}, LLM {llm}, effective {risk.risk_level}{suffix}",
+                    "text": f"{display_command} → local {risk.local_risk_level}, LLM {llm}, effective {risk.risk_level}{suffix}",
                 })
 
             if risk.level == "blocked":
                 self.status = "blocked"
-                self.emit_event({"kind": "error", "text": f"Blocked command: {spec.cmd}\n{risk.reason}"})
+                self.emit_event({"kind": "error", "text": f"Blocked command: {display_command}\n{risk.reason}"})
                 self._send_result_to_chatgpt(
-                    f"Bridge policy BLOCKED this command:\n{spec.cmd}\n{risk.reason}\n"
+                    f"Bridge policy BLOCKED this command:\n{display_command}\n{risk.reason}\n"
                     "The LLM risk opinion cannot lower or bypass local policy. Propose a safer alternative within the current roadmap."
                 )
                 return
@@ -48,7 +50,7 @@ class RiskAwareExecutionMixin:
             if (risk.level == "approval" or not bool(self.config.get("auto_run_low_risk", True))) and not already_approved:
                 self._request_decision(
                     contract,
-                    command=spec.cmd,
+                    command=display_command,
                     summary=spec.purpose or contract.summary or "Protected command",
                     impact=risk.reason,
                     continuation={
@@ -62,7 +64,7 @@ class RiskAwareExecutionMixin:
                 return
 
             self.status = "running"
-            self.current_step = spec.purpose or spec.cmd
+            self.current_step = spec.purpose or display_command
             self.emit_event({"kind": "step", "badge": "BAM!", "status": "running", "text": self.current_step})
             try:
                 result = run_command(
@@ -74,8 +76,8 @@ class RiskAwareExecutionMixin:
                     str((download_bundle or {}).get("download_dir") or ""),
                 )
             except Exception as error:
-                accumulated.append({"command": spec.cmd, "error": str(error)})
-                self.emit_event({"kind": "error", "text": f"Command failed to run: {error}"})
+                accumulated.append({"command": display_command, "error": redact_text(str(error))})
+                self.emit_event({"kind": "error", "text": f"Command failed to run: {redact_text(str(error))}"})
                 break
 
             item = asdict(result)
@@ -94,7 +96,7 @@ class RiskAwareExecutionMixin:
                 "kind": "step",
                 "badge": badge,
                 "status": "running" if result.exit_code == 0 else "failed",
-                "text": f"{spec.cmd} → exit {result.exit_code} in {result.duration_seconds:.1f}s",
+                "text": f"{display_command} → exit {result.exit_code} in {result.duration_seconds:.1f}s",
             })
             if result.exit_code != 0:
                 break

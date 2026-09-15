@@ -49,6 +49,16 @@ APPROVAL_PATTERNS = [
     (r"\bssh\b|\bscp\b|\brsync\b[^\n]*:", "accesses another machine", "R3"),
 ]
 
+# These commands may look like verification, but they execute project-controlled code,
+# plugins, scripts, or package hooks. They therefore require human approval.
+PROJECT_CODE_EXECUTION_PATTERNS = [
+    (r"^(?:python3?|py)\s+-m\s+pytest\b|^pytest\b", "test runner executes project-controlled Python code"),
+    (r"^(?:npm|pnpm|yarn|bun)\s+(?:test|run\s+\S+)", "package script can execute project-controlled code"),
+    (r"^make(?:\s|$)", "Make targets can execute arbitrary project commands"),
+    (r"^(?:ruff|mypy|pyright|eslint)(?:\s|$)", "tooling may load project plugins/configuration and execute local code"),
+    (r"^(?:python3?|node|ruby|perl)\s+[^-]", "interpreter invocation executes a project/local program"),
+]
+
 SENSITIVE_PATH_PATTERNS = (
     r"(?:~|\$HOME|\$\{HOME\}|/home/[^/]+|/root)/(?:\.ssh|\.gnupg|\.aws|\.azure|\.kube)(?:/|\b)",
     r"(?:~|\$HOME|\$\{HOME\}|/home/[^/]+|/root)/\.config/(?:gcloud|gh)(?:/|\b)",
@@ -58,18 +68,16 @@ SENSITIVE_PATH_PATTERNS = (
     r"(?:~|\$HOME|\$\{HOME\}|/home/[^/]+|/root)/\.config/(?:google-chrome|chromium)(?:/|\b)",
 )
 
+# Only commands whose semantics are intrinsically inspection-oriented belong here.
 LOW_PREFIXES = (
-    "pytest", "python -m pytest", "python3 -m pytest",
-    "python -m compileall", "python3 -m compileall",
     "git status", "git diff", "git log", "git show", "git rev-parse",
     "ls", "pwd", "find ", "grep ", "rg ", "cat ", "head ", "tail ",
-    "ruff ", "mypy ", "pyright ", "eslint ", "npm test", "npm run test",
-    "pnpm test", "yarn test", "make test", "make check",
     "node --version", "npm --version", "pnpm --version", "corepack --version",
+    "python --version", "python3 --version",
     "command -v ", "which ", "whereis ", "type ", "test ",
 )
 
-SAFE_PRINTENV_KEYS = {"PATH", "HOME", "SHELL", "USER", "LOGNAME", "PWD", "LANG", "LC_ALL", "NVM_DIR"}
+SAFE_PRINTENV_KEYS = {"PATH", "HOME", "SHELL", "USER", "LOGNAME", "PWD", "LANG", "LC_ALL", "NVM_DIR", "VIRTUAL_ENV"}
 
 
 def _decision(level: str, reason: str, risk_level: str) -> PolicyDecision:
@@ -131,6 +139,8 @@ def _path_escapes_workspace(command: str, workspace_root: str) -> bool:
 def classify(command: str, workspace_root: str = "") -> PolicyDecision:
     normalized = " ".join(command.strip().split())
     lower = normalized.lower()
+    if not normalized:
+        return _decision("blocked", "empty commands are never executed", "R4")
     for pattern, reason in BLOCK_PATTERNS:
         if re.search(pattern, lower):
             return _decision("blocked", reason, "R4")
@@ -159,11 +169,13 @@ def classify(command: str, workspace_root: str = "") -> PolicyDecision:
         return _decision("approval", "find action can modify files or execute commands", "R2")
     if re.search(r"(?:&&|\|\||[;|<>`]|\$\(|[\r\n])", command):
         return _decision("approval", "compound shell syntax requires review", "R2")
+    for pattern, reason in PROJECT_CODE_EXECUTION_PATTERNS:
+        if re.search(pattern, lower):
+            return _decision("approval", reason, "R2")
     if lower.startswith(LOW_PREFIXES):
         if _path_escapes_workspace(command, workspace_root):
             return _decision("approval", "command references a path outside the configured workspace", "R2")
-        testish = lower.startswith(("pytest", "python -m pytest", "python3 -m pytest", "ruff ", "mypy ", "pyright ", "eslint ", "npm test", "npm run test", "pnpm test", "yarn test", "make test", "make check"))
-        return _decision("low", "read-only verification/test command", "R1" if testish else "R0")
+        return _decision("low", "bounded read-only inspection command", "R0")
     if lower.startswith("./") or lower.startswith("bash ") or lower.startswith("sh "):
         return _decision("approval", "local script execution can modify the workspace", "R2")
     return _decision("approval", "command is not in the low-risk allowlist", "R2")

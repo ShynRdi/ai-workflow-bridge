@@ -41,3 +41,10 @@ def test_provider_registry_has_major_web_llms():
 def test_native_host_public_identifier_matches_installer():
     background = (EXT / "background.js").read_text(); installer = (ROOT / "install_native_host.sh").read_text(); host = "io.github.shynrdi.ai_workflow_bridge"
     assert host in background; assert host in installer
+
+
+def test_content_version_matches_manifest_and_ping_exposes_provider_status():
+    manifest = json.loads((EXT / "manifest.json").read_text())
+    content = (EXT / "content.js").read_text()
+    assert f'const CONTENT_VERSION = "{manifest["version"]}"' in content
+    assert "providerStatus" in content

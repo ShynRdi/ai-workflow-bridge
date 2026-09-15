@@ -5,6 +5,14 @@ from typing import Any
 from config import save_config
 from contracts import WorkflowContract, extract_contract
 
+PROJECT_DONE_MARKER = "<<<AI_WORKFLOW_PROJECT_DONE>>>"
+STAGE_STOP_MARKER = "<<<AI_WORKFLOW_STOP>>>"
+
+
+def has_exact_trailing_marker(text: str, marker: str) -> bool:
+    return str(text or "").rstrip().endswith(marker)
+
+
 class ResponseMixin:
     def process_assistant_response(self, payload: dict[str, Any]) -> None:
         try:
@@ -17,9 +25,9 @@ class ResponseMixin:
                 if self.lifecycle=="planning":
                     try: roadmap=self.extract_roadmap(text)
                     except Exception as error: self.emit_event({"kind":"error","text":f"Planning roadmap JSON is invalid: {error}"}); return
-                    if "READY_TO_ARM" in text and roadmap:
+                    if has_exact_trailing_marker(text,"READY_TO_ARM") and roadmap:
                         self.config=save_config({"roadmap":roadmap}); self.status="ready_to_arm"; self.lifecycle="ready_to_arm"; self.current_step="Project plan ready; waiting for ARM & RUN"; self.emit_event({"kind":"step","badge":"READY!","status":"ready_to_arm","text":f"Planning completed with {len(roadmap)} roadmap phase(s). Review the plan, then click ARM & RUN."})
-                    else: self.status="planning_error"; self.emit_event({"kind":"error","text":"Planning response must include both AI_WORKFLOW_ROADMAP and READY_TO_ARM. No execution was armed."})
+                    else: self.status="planning_error"; self.emit_event({"kind":"error","text":"Planning response must include both AI_WORKFLOW_ROADMAP and end exactly with READY_TO_ARM. No execution was armed."})
                     self.emit({"kind":"state","state":self.state()}); return
                 if self.lifecycle=="change_review":
                     try: review=self.extract_change_review(text)
@@ -29,18 +37,18 @@ class ResponseMixin:
                     if review.get("roadmap_changes"): impact_parts.append("Roadmap changes: "+"; ".join(review["roadmap_changes"]))
                     dummy=WorkflowContract(version=1,phase=str(self.config.get("phase") or ""),stage=str(self.config.get("stage") or ""),summary=review.get("summary") or "Course change")
                     self._request_decision(dummy,command="COURSE CHANGE",summary=review.get("summary") or "Review requested course change",impact="\n".join([x for x in impact_parts if x]),continuation={"kind":"course_change","review":review}); return
-                if self.lifecycle=="finishing" and "<<<AI_WORKFLOW_PROJECT_DONE>>>" in text:
+                if self.lifecycle=="finishing" and has_exact_trailing_marker(text,PROJECT_DONE_MARKER):
                     self.no_contract_recoveries=0; self.status="complete"; self.lifecycle="complete"; self.current_step="Project closed out"; self.paused=True; self.emit_event({"kind":"step","badge":"FIN!","status":"complete","text":"Project-wide closeout marker received after final verification. Workflow is complete and stopped."}); self.telegram.send_report(f"🏁 AI Workflow Bridge — project complete\n{self.config.get('project_name') or 'Project'}\nProvider: {self.provider_name(self.active_provider)}"); self.emit({"kind":"state","state":self.state()}); return
                 try: contract=extract_contract(text)
                 except Exception as error: self.emit_event({"kind":"error","text":f"Invalid AI_WORKFLOW contract: {error}"}); return
                 if contract is None:
-                    if "<<<AI_WORKFLOW_STOP>>>" in text:
+                    if has_exact_trailing_marker(text,STAGE_STOP_MARKER):
                         self.no_contract_recoveries=0; self.status="idle"
                         if self.lifecycle!="finishing": self.lifecycle="idle"
                         self.current_step="Current workflow stage completed"; self.emit_event({"kind":"step","badge":"DONE!","status":"idle","text":"The current phase/stage was explicitly marked complete. Automation stopped cleanly; update Project HQ before arming a different phase/stage."}); return
                     recoverable={"waiting_llm","waiting_chatgpt","reporting","recovering","arming","finishing"}
                     if self.status in recoverable and self.no_contract_recoveries<2:
-                        self.no_contract_recoveries+=1; self.status="recovering"; self.current_step="Recovering missing AI_WORKFLOW contract"; self.emit_event({"kind":"step","badge":"NUDGE!","status":"recovering","text":f"{self.provider_name(self.active_provider)} omitted the workflow contract; requesting protocol recovery ({self.no_contract_recoveries}/2)."}); self._send_result_to_chatgpt("AI WORKFLOW BRIDGE — PROTOCOL RECOVERY\nYour immediately previous response omitted the required workflow marker. Do not repeat the long explanation. Use the current roadmap and latest terminal results. If local work remains, end with one AI_WORKFLOW contract. If the current phase/stage is complete, use <<<AI_WORKFLOW_STOP>>>. If project FINISH was requested and final verification is truly complete, use <<<AI_WORKFLOW_PROJECT_DONE>>>."); return
+                        self.no_contract_recoveries+=1; self.status="recovering"; self.current_step="Recovering missing AI_WORKFLOW contract"; self.emit_event({"kind":"step","badge":"NUDGE!","status":"recovering","text":f"{self.provider_name(self.active_provider)} omitted the workflow contract; requesting protocol recovery ({self.no_contract_recoveries}/2)."}); self._send_result_to_chatgpt("AI WORKFLOW BRIDGE — PROTOCOL RECOVERY\nYour immediately previous response omitted the required workflow marker. Do not repeat the long explanation. Use the current roadmap and latest terminal results. If local work remains, end with one AI_WORKFLOW contract. If the current phase/stage is complete, end exactly with <<<AI_WORKFLOW_STOP>>>. If project FINISH was requested and final verification is truly complete, end exactly with <<<AI_WORKFLOW_PROJECT_DONE>>>."); return
                     if self.status in recoverable:
                         self.status="protocol_error"; self.lifecycle="protocol_error"; self.current_step="Workflow protocol missing"; self.emit_event({"kind":"error","text":f"{self.provider_name(self.active_provider)} omitted the workflow protocol twice. Recovery stopped to prevent a loop. Review the chat and re-arm manually."}); return
                     self.emit_event({"kind":"info","badge":"FYI","text":"LLM response had no workflow contract while no automated step was pending; treated as report-only."}); return
