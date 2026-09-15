@@ -1,0 +1,47 @@
+{
+  "manifest_version": 3,
+  "name": "AI Workflow Bridge",
+  "version": "0.2.1",
+  "description": "Guarded multi-LLM web workflow runner with approvals, roadmap controls, rate limits, and account-safe local execution.",
+  "minimum_chrome_version": "114",
+  "permissions": [
+    "storage",
+    "nativeMessaging",
+    "sidePanel",
+    "downloads",
+    "tabs",
+    "scripting"
+  ],
+  "host_permissions": [],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "side_panel": {
+    "default_path": "sidepanel.html"
+  },
+  "action": {
+    "default_title": "AI Workflow Bridge"
+  },
+  "optional_host_permissions": [
+    "https://chatgpt.com/*",
+    "https://chat.openai.com/*",
+    "https://claude.ai/*",
+    "https://gemini.google.com/*",
+    "https://chat.deepseek.com/*",
+    "https://grok.com/*",
+    "https://www.perplexity.ai/*",
+    "https://perplexity.ai/*",
+    "https://chat.mistral.ai/*",
+    "https://copilot.com/*",
+    "https://www.copilot.com/*",
+    "https://www.meta.ai/*",
+    "https://meta.ai/*",
+    "https://poe.com/*",
+    "https://chat.qwen.ai/*",
+    "https://qwen.ai/*",
+    "https://chat.z.ai/*",
+    "https://z.ai/*",
+    "https://www.kimi.com/*",
+    "https://kimi.com/*"
+  ]
+}

@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+.venv/
+venv/
+
+# Node/editor tooling
+node_modules/
+.vscode/
+.idea/
+.DS_Store
+
+# Build/release artifacts
+dist/
+build/
+*.zip
+*.tar.gz
+
+# Local runtime state
+*.sqlite3
+*.sqlite3-shm
+*.sqlite3-wal
+*.log
+
+# Environment/secrets
+.env
+.env.*
+!.env.example
+!.env.sample
+
+# Local scratch
+.tmp/
+tmp/

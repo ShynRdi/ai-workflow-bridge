@@ -1,0 +1,35 @@
+name: Provider adapter report
+description: Report a broken or proposed web LLM adapter
+title: "[Provider]: "
+labels: ["provider-adapter"]
+body:
+  - type: input
+    id: provider
+    attributes:
+      label: Provider and domain
+      placeholder: "Claude — https://claude.ai"
+    validations:
+      required: true
+  - type: dropdown
+    id: type
+    attributes:
+      label: Request type
+      options: [Existing adapter broken, New provider request, Promote adapter support level]
+    validations:
+      required: true
+  - type: checkboxes
+    id: behavior
+    attributes:
+      label: Behaviors tested
+      options:
+        - label: Composer detected
+        - label: Prompt inserted
+        - label: Prompt submission confirmed
+        - label: Streaming detected
+        - label: Completed response captured
+        - label: Safety/rate-limit signal pauses workflow
+  - type: textarea
+    id: notes
+    attributes:
+      label: Notes
+      description: Do not include cookies, account identifiers, tokens, or private prompts.
