@@ -55,7 +55,7 @@ jobs:
         run: bash -n install_native_host.sh native_host/launcher.sh scripts/publish_to_github.sh
       - name: Build extension package
         run: python3 scripts/package_extension.py
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: ai-workflow-bridge-extension
           path: dist/*.zip
