@@ -33,6 +33,7 @@ class ReportingMixin:
         lines.append(f"Next: {contract.next_step or 'wait for selected LLM'}"); return "\n".join(lines)
 
     def _send_result_to_chatgpt(self, text: str) -> None:
+        text=self.decorate_outbound_prompt(text)
         if self.provider_guard: self.emit_event({"kind":"error","text":"Provider safety guard is active; outbound LLM messages are blocked."}); return
         decision=self.budget.decision(self.config)
         if not decision.get("allowed"):

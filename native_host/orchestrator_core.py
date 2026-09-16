@@ -50,6 +50,127 @@ class CoreMixin:
         names = {"chatgpt":"ChatGPT","claude":"Claude","gemini":"Gemini","deepseek":"DeepSeek","grok":"Grok","perplexity":"Perplexity","mistral":"Mistral Vibe","copilot":"Microsoft Copilot","meta":"Meta AI","poe":"Poe","qwen":"Qwen","glm":"Z.ai / GLM","kimi":"Kimi"}
         return names.get(provider_id, provider_id or "Web LLM")
 
+    def protocol_rules(self) -> str:
+        phase=str(self.config.get("phase") or "UNSET").strip()
+        stage=str(self.config.get("stage") or "UNSET").strip()
+        return f"""AI WORKFLOW BRIDGE — STRICT RESPONSE PROTOCOL
+
+These rules constrain response format, safety, and roadmap discipline only.
+You remain free to choose the technically best next step from the current evidence.
+Do not follow a predetermined implementation path merely to satisfy this protocol.
+
+TERMINAL RESPONSE RULE
+- If executable local work remains, the response MUST end with exactly one complete
+  <<<AI_WORKFLOW>>> ... <<<END_AI_WORKFLOW>>> block.
+- If a genuine human product/architecture/scope decision is required before dependent work,
+  set decision_required=true and include no commands that depend on that unresolved choice.
+- If the current configured phase/stage is intentionally complete or there is no executable
+  next action, end exactly with <<<AI_WORKFLOW_STOP>>>.
+- Only during FINISH PROJECT, after all required verification succeeds and no required work
+  remains, end exactly with <<<AI_WORKFLOW_PROJECT_DONE>>>.
+- Never emit two AI_WORKFLOW blocks.
+- Never omit all terminal protocol markers.
+- Never put prose after the final terminal marker.
+
+GENERAL WORKFLOW DISCIPLINE
+- Current configured position is phase={phase}, stage={stage}.
+- Preserve the approved roadmap and user decisions.
+- Do not silently change phase, stage, scope, architecture commitments, or completed work.
+- Choose the next step from actual evidence; do not repeat completed work unless new evidence
+  makes re-verification necessary.
+- Human-readable prose is never executable.
+- Every commands[] item must be exactly one atomic shell command.
+- Do not chain commands with &&, ||, ;, pipes, redirections, command substitution, or multiline shell.
+- Every command must include cwd, purpose, and semantic risk_assessment.
+- The LLM risk assessment is advisory only and can never authorize or lower local policy risk.
+- Never request login automation, CAPTCHA/MFA/security bypass, cookie/session extraction,
+  rate-limit circumvention, credential disclosure, or destructive shortcuts.
+
+RISK RUBRIC
+- R0: read-only local inspection with no meaningful side effect.
+- R1: bounded verification or read-only external metadata lookup with minimal side effect.
+- R2: reversible workspace mutation, dependency change, or execution of project-controlled code.
+- R3: sensitive, remote, external-state, credential-adjacent, or production-significant operation.
+- R4: destructive, credential-exposing, security-bypassing, or otherwise forbidden operation.
+When uncertain, choose the higher risk.
+
+REQUIRED CONTRACT SHAPE
+<<<AI_WORKFLOW>>>
+{{
+  "version": 1,
+  "phase": "{phase}",
+  "stage": "{stage}",
+  "summary": "short description of this step",
+  "decision_required": false,
+  "decision_reason": "",
+  "downloads": [],
+  "commands": [
+    {{
+      "cmd": "one atomic shell command",
+      "cwd": ".",
+      "purpose": "why this command is needed",
+      "risk_assessment": {{
+        "level": "R0",
+        "confidence": 0.99,
+        "factors": ["concise evidence-based reason"],
+        "dimensions": {{
+          "filesystem": 0,
+          "network": 0,
+          "credentials": 0,
+          "database": 0,
+          "git_remote": 0,
+          "system": 0,
+          "production": 0,
+          "irreversibility": 0,
+          "data_exfiltration": 0
+        }},
+        "reversible": true,
+        "recommended_action": "auto"
+      }}
+    }}
+  ],
+  "success_conditions": ["observable evidence that proves this step succeeded"],
+  "next_step": "what should be considered after this step succeeds"
+}}
+<<<END_AI_WORKFLOW>>>
+"""
+
+    def decorate_outbound_prompt(self, text: str) -> str:
+        value=str(text or "").rstrip()
+        if "AI WORKFLOW BRIDGE — PROJECT START" in value:
+            return value + """
+
+AI WORKFLOW BRIDGE — PLANNING OUTPUT DISCIPLINE
+These rules constrain output format, not your technical reasoning.
+Planning is reasoning-only: do not emit an executable AI_WORKFLOW block.
+Create the technically appropriate roadmap from the master brief and evidence.
+Include exactly one AI_WORKFLOW_ROADMAP block containing the configured initial phase/stage.
+End the entire response with exactly READY_TO_ARM.
+Do not put prose after READY_TO_ARM.
+"""
+        if "AI WORKFLOW BRIDGE — COURSE CHANGE REVIEW" in value:
+            return value + """
+
+AI WORKFLOW BRIDGE — COURSE-CHANGE OUTPUT DISCIPLINE
+These rules constrain output format, not your technical recommendation.
+This turn is review-only: do not emit executable commands.
+Analyze the requested change from the current evidence and preserved project state.
+Return exactly one AI_WORKFLOW_CHANGE_REVIEW block.
+End the entire response with exactly <<<END_AI_WORKFLOW_CHANGE_REVIEW>>>.
+Do not put prose after the end marker.
+"""
+        return value + "\n\n" + self.protocol_rules()
+
+    def protocol_recovery_prompt(self, diagnostics: dict[str, Any]) -> str:
+        return f"""AI WORKFLOW BRIDGE — PROTOCOL RECOVERY
+The previously captured response did not contain a complete terminal workflow protocol.
+Capture diagnostics: {json.dumps(diagnostics, ensure_ascii=False, sort_keys=True)}
+
+Use the current conversation, canonical roadmap, and latest terminal evidence.
+Do not restart the task and do not repeat completed commands merely because recovery was requested.
+Choose the technically best next step yourself; only output format, safety, and roadmap discipline are constrained.
+"""
+
     def start_prompt(self) -> str:
         project=str(self.config.get("project_name") or "Untitled Project").strip(); goal=str(self.config.get("project_goal") or "").strip(); phase=str(self.config.get("phase") or "UNSET").strip(); stage=str(self.config.get("stage") or "UNSET").strip(); workspace=str(self.config.get("workspace_root") or "UNSET").strip()
         return f'''AI WORKFLOW BRIDGE — PROJECT START
@@ -89,6 +210,7 @@ Phase/stage identifiers must be stable and concise. Include the configured initi
 
 End the response with exactly:
 READY_TO_ARM
+Do not put prose after READY_TO_ARM.
 '''
 
     def controller_prompt(self) -> str:

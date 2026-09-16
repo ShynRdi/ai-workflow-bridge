@@ -20,7 +20,7 @@ class MessageMixin:
                 if not str(self.config.get("project_goal") or "").strip(): self.emit_event({"kind":"error","text":"Project goal/master brief is empty."}); return
                 self.lifecycle="planning"; self.status="planning"; self.current_step=f"Planning project with {self.provider_name(provider)}"; self.emit_event({"kind":"step","badge":"PLAN!","status":"planning","text":self.current_step}); self._send_result_to_chatgpt(self.start_prompt()); return
             if msg_type=="build_controller_prompt":
-                if self.lifecycle in {"ready_to_arm","setup","idle","protocol_error","paused"}:
+                if self.lifecycle in {"ready_to_arm","setup","idle","protocol_error","protocol_blocked","paused"}:
                     if self.lifecycle in {"ready_to_arm","setup"}: self.budget.reset(provider)
                     self.provider_guard=False; self.paused=False; self.lifecycle="running"
                 self.status="arming"; self.current_step=f"Arming {self.provider_name(provider)} workflow"; self.emit_event({"kind":"step","badge":"ZAP!","status":"arming","text":self.current_step}); self._send_result_to_chatgpt(self.controller_prompt()); return
