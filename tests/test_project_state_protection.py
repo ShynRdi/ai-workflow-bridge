@@ -87,3 +87,105 @@ def test_runner_removes_control_directory_created_by_project_command(tmp_path: P
         raise AssertionError("project command should not be able to create the control directory")
 
     assert not control.exists()
+
+
+def test_runner_refuses_preexisting_symlinked_control_directory(
+    tmp_path: Path,
+):
+    outside = tmp_path / "outside-runner"
+    outside.mkdir()
+    marker = outside / "marker.txt"
+    marker.write_text("KEEP")
+
+    control = tmp_path / ".ai-workflow"
+    control.symlink_to(outside, target_is_directory=True)
+
+    try:
+        run_command(
+            "true",
+            str(tmp_path),
+            ".",
+            10,
+            10000,
+        )
+    except ValueError as error:
+        assert "symbolic link" in str(error)
+    else:
+        raise AssertionError(
+            "runner must reject a pre-existing control-directory symlink"
+        )
+
+    assert marker.read_text() == "KEEP"
+
+
+def test_runner_unlinks_control_symlink_created_by_command(
+    tmp_path: Path,
+):
+    import shlex
+
+    outside = tmp_path / "outside-created-link"
+    outside.mkdir()
+    marker = outside / "marker.txt"
+    marker.write_text("KEEP")
+
+    target = shlex.quote(str(outside))
+
+    try:
+        run_command(
+            f"ln -s {target} .ai-workflow",
+            str(tmp_path),
+            ".",
+            10,
+            10000,
+        )
+    except RuntimeError as error:
+        assert "native-owned .ai-workflow" in str(error)
+    else:
+        raise AssertionError(
+            "project command must not leave a control-directory symlink"
+        )
+
+    control = tmp_path / ".ai-workflow"
+    assert not control.exists()
+    assert not control.is_symlink()
+    assert marker.read_text() == "KEEP"
+
+
+def test_runner_restores_state_if_control_is_replaced_with_symlink(
+    tmp_path: Path,
+):
+    import shlex
+
+    initialize_project_state(str(tmp_path), roadmap())
+
+    roadmap_path = tmp_path / ".ai-workflow" / "ROADMAP.md"
+    before = roadmap_path.read_bytes()
+
+    outside = tmp_path / "outside-replacement"
+    outside.mkdir()
+    marker = outside / "marker.txt"
+    marker.write_text("KEEP")
+
+    target = shlex.quote(str(outside))
+
+    try:
+        run_command(
+            f"rm -rf .ai-workflow && ln -s {target} .ai-workflow",
+            str(tmp_path),
+            ".",
+            10,
+            10000,
+        )
+    except RuntimeError as error:
+        assert "native-owned .ai-workflow" in str(error)
+    else:
+        raise AssertionError(
+            "replacement control-directory symlink must be repaired"
+        )
+
+    control = tmp_path / ".ai-workflow"
+
+    assert control.is_dir()
+    assert not control.is_symlink()
+    assert roadmap_path.read_bytes() == before
+    assert marker.read_text() == "KEEP"

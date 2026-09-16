@@ -69,3 +69,69 @@ def test_roadmap_markdown_contains_machine_state(tmp_path: Path):
     assert "AI_WORKFLOW_STATE_BEGIN" in text
     assert "AI_WORKFLOW_STATE_END" in text
     assert "P0 / BOOT" in text
+
+
+def test_rejects_symlinked_control_directory(tmp_path: Path):
+    outside = tmp_path / "outside-control"
+    outside.mkdir()
+    marker = outside / "marker.txt"
+    marker.write_text("KEEP")
+
+    control = tmp_path / ".ai-workflow"
+    control.symlink_to(outside, target_is_directory=True)
+
+    try:
+        initialize_project_state(str(tmp_path), sample_roadmap())
+    except ValueError as error:
+        assert "symbolic link" in str(error)
+    else:
+        raise AssertionError("symlinked control directory must be rejected")
+
+    assert marker.read_text() == "KEEP"
+    assert list(outside.iterdir()) == [marker]
+
+
+def test_rejects_symlinked_roadmap_file_without_touching_target(
+    tmp_path: Path,
+):
+    control = tmp_path / ".ai-workflow"
+    control.mkdir()
+
+    outside = tmp_path / "outside-roadmap.md"
+    outside.write_text("KEEP ROADMAP")
+
+    (control / "ROADMAP.md").symlink_to(outside)
+
+    try:
+        initialize_project_state(str(tmp_path), sample_roadmap())
+    except ValueError as error:
+        assert "symbolic link" in str(error)
+    else:
+        raise AssertionError("symlinked ROADMAP.md must be rejected")
+
+    assert outside.read_text() == "KEEP ROADMAP"
+    assert not (control / "HISTORY.md").exists()
+
+
+def test_rejects_symlinked_history_file_without_touching_target(
+    tmp_path: Path,
+):
+    control = tmp_path / ".ai-workflow"
+    control.mkdir()
+
+    outside = tmp_path / "outside-history.md"
+    outside.write_text("KEEP HISTORY")
+
+    (control / "HISTORY.md").symlink_to(outside)
+
+    try:
+        initialize_project_state(str(tmp_path), sample_roadmap())
+    except ValueError as error:
+        assert "symbolic link" in str(error)
+    else:
+        raise AssertionError("symlinked HISTORY.md must be rejected")
+
+    assert outside.read_text() == "KEEP HISTORY"
+
+    # control_paths validates the whole native-owned layout before writing.
+    assert not (control / "ROADMAP.md").exists()

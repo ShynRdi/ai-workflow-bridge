@@ -21,8 +21,8 @@ def test_smoke_test_is_wired_into_sidepanel():
     assert '<script src="provider-smoke.js"></script>' in html
 
 
-def test_extension_version_030_and_permissions_remain_optional():
+def test_extension_version_031_and_permissions_remain_optional():
     manifest = json.loads((EXT / "manifest.json").read_text(encoding="utf-8"))
-    assert manifest["version"] == "0.3.0"
+    assert manifest["version"] == "0.3.1"
     assert manifest.get("host_permissions") == []
     assert "cookies" not in manifest.get("permissions", [])
