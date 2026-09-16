@@ -5,8 +5,14 @@ const PINNED_TAB_STORAGE_KEY = "pinnedLlmTabId";
 let nativePort = null;
 let nativeReady = false;
 let reconnectTimer = null;
+let nativeHandshakeTimer = null;
+let nativeDisconnectReason = "";
+let reconnectAttempt = 0;
 let lastLlmTabId = null;
 let responseWatchdog = null;
+
+const NATIVE_HANDSHAKE_TIMEOUT_MS = 8000;
+const NATIVE_RECONNECT_DELAYS_MS = [2500, 5000, 10000, 20000, 30000];
 
 const providers = globalThis.AWB_PROVIDERS || [];
 const utils = globalThis.AWB_PROVIDER_UTILS;
@@ -15,34 +21,139 @@ function broadcast(message) {
   chrome.runtime.sendMessage({ type: "BRIDGE_EVENT", payload: message }).catch(() => {});
 }
 
+function clearNativeHandshakeTimer() {
+  if (nativeHandshakeTimer) clearTimeout(nativeHandshakeTimer);
+  nativeHandshakeTimer = null;
+}
+
+function markNativeReady(message) {
+  if (nativeReady) return;
+
+  nativeReady = true;
+  reconnectAttempt = 0;
+  nativeDisconnectReason = "";
+  clearNativeHandshakeTimer();
+
+  if (message?.kind !== "host_status") {
+    broadcast({
+      kind: "host_status",
+      connected: true,
+      text: "Native host connected",
+    });
+  }
+}
+
+function handleNativeDisconnect(port, reason = "") {
+  if (nativePort !== port) return;
+
+  clearNativeHandshakeTimer();
+
+  nativePort = null;
+  nativeReady = false;
+
+  const text =
+    reason ||
+    nativeDisconnectReason ||
+    "Native host disconnected";
+
+  nativeDisconnectReason = "";
+
+  broadcast({
+    kind: "host_status",
+    connected: false,
+    text,
+  });
+
+  scheduleReconnect();
+}
+
 function connectNative() {
   if (nativePort) return;
+
+  nativeReady = false;
+  nativeDisconnectReason = "";
+
+  broadcast({
+    kind: "host_status",
+    connected: false,
+    connecting: true,
+    text: "Connecting to native host…",
+  });
+
   try {
-    nativePort = chrome.runtime.connectNative(NATIVE_HOST);
-    nativeReady = true;
-    broadcast({ kind: "host_status", connected: true, text: "Native host connected" });
-    nativePort.onMessage.addListener(handleNativeMessage);
-    nativePort.onDisconnect.addListener(() => {
-      const error = chrome.runtime.lastError?.message || "Native host disconnected";
-      nativePort = null; nativeReady = false;
-      broadcast({ kind: "host_status", connected: false, text: error });
-      scheduleReconnect();
+    const port = chrome.runtime.connectNative(NATIVE_HOST);
+    nativePort = port;
+
+    port.onMessage.addListener((message) => {
+      if (nativePort !== port) return;
+      handleNativeMessage(message);
     });
+
+    port.onDisconnect.addListener(() => {
+      const error =
+        chrome.runtime.lastError?.message ||
+        nativeDisconnectReason ||
+        "Native host disconnected";
+
+      handleNativeDisconnect(port, error);
+    });
+
+    nativeHandshakeTimer = setTimeout(() => {
+      if (nativePort !== port || nativeReady) return;
+
+      nativeDisconnectReason = "Native host handshake timed out";
+
+      try {
+        port.disconnect();
+      } catch {}
+
+      handleNativeDisconnect(
+        port,
+        "Native host handshake timed out",
+      );
+    }, NATIVE_HANDSHAKE_TIMEOUT_MS);
   } catch (error) {
-    nativePort = null; nativeReady = false;
-    broadcast({ kind: "host_status", connected: false, text: String(error) });
+    nativePort = null;
+    nativeReady = false;
+
+    broadcast({
+      kind: "host_status",
+      connected: false,
+      text: String(error),
+    });
+
     scheduleReconnect();
   }
 }
 
 function scheduleReconnect() {
   if (reconnectTimer) return;
-  reconnectTimer = setTimeout(() => { reconnectTimer = null; connectNative(); }, 2500);
+
+  const index = Math.min(
+    reconnectAttempt,
+    NATIVE_RECONNECT_DELAYS_MS.length - 1,
+  );
+
+  const delay = NATIVE_RECONNECT_DELAYS_MS[index];
+
+  reconnectAttempt = Math.min(
+    reconnectAttempt + 1,
+    NATIVE_RECONNECT_DELAYS_MS.length - 1,
+  );
+
+  reconnectTimer = setTimeout(() => {
+    reconnectTimer = null;
+    connectNative();
+  }, delay);
 }
 
 function sendNative(message) {
   connectNative();
-  if (!nativePort) throw new Error("Native host is not connected");
+
+  if (!nativePort) {
+    throw new Error("Native host is not connected");
+  }
+
   nativePort.postMessage(message);
 }
 
@@ -201,6 +312,7 @@ async function handleDownloadRequest(message) {
 }
 
 async function handleNativeMessage(message) {
+  markNativeReady(message);
   broadcast(message);
   if (message?.kind === "send_to_chatgpt" || message?.kind === "send_to_llm") {
     try {
