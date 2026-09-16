@@ -9,6 +9,15 @@ from orchestrator_reporting import ReportingMixin
 
 
 class Orchestrator(ProjectStateMixin, CoreMixin, MessageMixin, ResponseMixin, ApprovalMixin, RiskAwareExecutionMixin, ExecutionMixin, ReportingMixin):
+    def handle(self, message):
+        if message.get("type") == "set_config":
+            message = dict(message)
+            config = dict(message.get("config") or {})
+            for key in ("phase", "stage", "roadmap"):
+                config.pop(key, None)
+            message["config"] = config
+        return MessageMixin.handle(self, message)
+
     def controller_prompt(self) -> str:
         base = ProjectStateMixin.controller_prompt(self)
         marker = "9. Every response that advances automation MUST end with exactly one contract:"
