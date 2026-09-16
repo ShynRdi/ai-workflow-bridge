@@ -73,9 +73,15 @@ def _restore_control_dir(root: Path, snapshot: dict[str, bytes] | None) -> bool:
 
     Returns True when mutation was detected and repaired.
     """
-    if snapshot is None:
-        return False
     control = root / CONTROL_DIR_NAME
+    if snapshot is None:
+        if not control.exists():
+            return False
+        if control.is_dir():
+            shutil.rmtree(control)
+        else:
+            control.unlink()
+        return True
     current = _snapshot_control_dir(root)
     if current == snapshot:
         return False
@@ -94,16 +100,20 @@ def run_command(command: str, workspace_root: str, cwd: str, timeout: int, max_o
     workdir = resolve_cwd(workspace_root, cwd)
     control_snapshot = _snapshot_control_dir(root)
     started = time.monotonic()
-    proc = subprocess.run(
-        ["/bin/bash", "-lc", command],
-        cwd=str(workdir),
-        text=True,
-        capture_output=True,
-        timeout=timeout,
-        env=sanitized_environment(download_dir),
-    )
+    mutation_restored = False
+    try:
+        proc = subprocess.run(
+            ["/bin/bash", "-lc", command],
+            cwd=str(workdir),
+            text=True,
+            capture_output=True,
+            timeout=timeout,
+            env=sanitized_environment(download_dir),
+        )
+    finally:
+        mutation_restored = _restore_control_dir(root, control_snapshot)
     duration = time.monotonic() - started
-    if _restore_control_dir(root, control_snapshot):
+    if mutation_restored:
         raise RuntimeError(
             "Project command attempted to mutate native-owned .ai-workflow lifecycle files; changes were restored"
         )

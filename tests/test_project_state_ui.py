@@ -4,10 +4,13 @@ ROOT = Path(__file__).resolve().parents[1]
 EXT = ROOT / "extension"
 
 
-def test_phase_stage_are_not_user_editable():
+def test_phase_stage_are_not_present_in_extension_frontend():
     html = (EXT / "sidepanel.html").read_text()
-    assert '<input id="phase" type="hidden"' in html
-    assert '<input id="stage" type="hidden"' in html
+    sidepanel = (EXT / "sidepanel.js").read_text()
+    assert 'id="phase"' not in html
+    assert 'id="stage"' not in html
+    assert '$("phase")' not in sidepanel
+    assert '$("stage")' not in sidepanel
     assert 'id="roadmapCurrent"' in html
     assert 'id="roadmapNext"' in html
     assert 'id="roadmapProgress"' in html

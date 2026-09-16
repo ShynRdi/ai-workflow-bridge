@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 from pathlib import Path
+import sys
+
+sys.path.insert(0, str(Path(__file__).parents[1] / "native_host"))
 
 from project_state import (
     advance_project_state,
