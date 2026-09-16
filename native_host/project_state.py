@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import errno
 import json
 import os
+import stat
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -17,12 +20,55 @@ def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _ensure_regular_or_missing(path: Path, label: str) -> None:
+    """Reject symlink and non-regular state-file entries."""
+    if path.is_symlink():
+        raise ValueError(f"{label} must not be a symbolic link")
+    if path.exists() and not path.is_file():
+        raise ValueError(f"{label} must be a regular file")
+
+
+def _validate_control_layout(
+    root: Path,
+    control: Path,
+    roadmap_path: Path,
+    history_path: Path,
+) -> None:
+    """Ensure native-owned state paths cannot escape through symlinks."""
+    if control.is_symlink():
+        raise ValueError(f"{CONTROL_DIR} must not be a symbolic link")
+
+    if control.exists() and not control.is_dir():
+        raise ValueError(f"{CONTROL_DIR} must be a directory")
+
+    try:
+        control.resolve(strict=False).relative_to(root)
+    except ValueError as error:
+        raise ValueError(
+            f"{CONTROL_DIR} escapes the configured workspace"
+        ) from error
+
+    _ensure_regular_or_missing(roadmap_path, ROADMAP_FILE)
+    _ensure_regular_or_missing(history_path, HISTORY_FILE)
+
+
 def control_paths(workspace_root: str) -> tuple[Path, Path, Path]:
     root = Path(workspace_root).expanduser().resolve()
     if not root.is_dir():
         raise ValueError(f"Workspace does not exist: {root}")
+
     control = root / CONTROL_DIR
-    return control, control / ROADMAP_FILE, control / HISTORY_FILE
+    roadmap_path = control / ROADMAP_FILE
+    history_path = control / HISTORY_FILE
+
+    _validate_control_layout(
+        root,
+        control,
+        roadmap_path,
+        history_path,
+    )
+
+    return control, roadmap_path, history_path
 
 
 def _positions(roadmap: list[dict[str, Any]]) -> list[tuple[str, str]]:
@@ -48,23 +94,88 @@ def _label(position: tuple[str, str] | None) -> str:
     return f"{phase} / {stage}" if stage else phase
 
 
+def _safe_read_text(path: Path, label: str) -> str:
+    """Read a native-owned regular file without following a final symlink."""
+    _ensure_regular_or_missing(path, label)
+
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+
+    try:
+        fd = os.open(path, flags)
+    except OSError as error:
+        if error.errno == errno.ELOOP:
+            raise ValueError(
+                f"{label} must not be a symbolic link"
+            ) from error
+        raise
+
+    try:
+        mode = os.fstat(fd).st_mode
+        if not stat.S_ISREG(mode):
+            raise ValueError(f"{label} must be a regular file")
+
+        with os.fdopen(fd, "r", encoding="utf-8") as handle:
+            fd = -1
+            return handle.read()
+    finally:
+        if fd >= 0:
+            os.close(fd)
+
+
 def _atomic_write(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(text, encoding="utf-8")
-    os.replace(tmp, path)
+    _ensure_regular_or_missing(path, path.name)
+
+    fd, temp_name = tempfile.mkstemp(
+        prefix=f".{path.name}.",
+        suffix=".tmp",
+        dir=str(path.parent),
+    )
+    temp_path = Path(temp_name)
+
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+
+        # Re-check before replacement. os.replace replaces a symlink entry
+        # rather than following it, but native-owned paths reject symlinks
+        # explicitly so corruption is surfaced instead of silently repaired.
+        _ensure_regular_or_missing(path, path.name)
+        os.replace(temp_path, path)
+    finally:
+        try:
+            temp_path.unlink()
+        except FileNotFoundError:
+            pass
 
 
 def _append_history(path: Path, lines: list[str]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    if not path.exists():
-        path.write_text("# AI Workflow History\n\nAppend-only project lifecycle history managed by AI Workflow Bridge.\n\n", encoding="utf-8")
+    _ensure_regular_or_missing(path, HISTORY_FILE)
+
+    if path.exists():
+        text = _safe_read_text(path, HISTORY_FILE)
+    else:
+        text = (
+            "# AI Workflow History\n\n"
+            "Append-only project lifecycle history managed by "
+            "AI Workflow Bridge.\n\n"
+        )
+
     stamp = now_iso()
-    with path.open("a", encoding="utf-8") as handle:
-        handle.write(f"## {stamp}\n")
-        for line in lines:
-            handle.write(f"- {line}\n")
-        handle.write("\n")
+    appended = [f"## {stamp}"]
+    appended.extend(f"- {line}" for line in lines)
+    appended.append("")
+
+    if text and not text.endswith("\n"):
+        text += "\n"
+
+    _atomic_write(
+        path,
+        text + "\n".join(appended) + "\n",
+    )
 
 
 def _completed_pairs(state: dict[str, Any]) -> list[tuple[str, str]]:
@@ -158,7 +269,7 @@ def load_project_state(workspace_root: str) -> dict[str, Any] | None:
     _, roadmap_path, _ = control_paths(workspace_root)
     if not roadmap_path.exists():
         return None
-    text = roadmap_path.read_text(encoding="utf-8")
+    text = _safe_read_text(roadmap_path, ROADMAP_FILE)
     if STATE_BEGIN not in text or STATE_END not in text:
         raise ValueError(f"{ROADMAP_FILE} is missing its machine-state block")
     raw = text.rsplit(STATE_BEGIN, 1)[1].split(STATE_END, 1)[0].strip()

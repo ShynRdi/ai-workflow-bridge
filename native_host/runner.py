@@ -59,39 +59,87 @@ def sanitized_environment(download_dir: str = "") -> dict[str, str]:
 
 def _snapshot_control_dir(root: Path) -> dict[str, bytes] | None:
     control = root / CONTROL_DIR_NAME
-    if not control.is_dir():
+
+    if control.is_symlink():
+        raise ValueError(
+            "Native-owned .ai-workflow must not be a symbolic link"
+        )
+
+    if not control.exists():
         return None
+
+    if not control.is_dir():
+        raise ValueError(
+            "Native-owned .ai-workflow must be a directory"
+        )
+
     snapshot: dict[str, bytes] = {}
+
     for path in sorted(control.rglob("*")):
-        if path.is_file():
-            snapshot[str(path.relative_to(control))] = path.read_bytes()
+        if path.is_symlink():
+            raise ValueError(
+                "Native-owned .ai-workflow must not contain symbolic links"
+            )
+
+        if path.is_dir():
+            continue
+
+        if not path.is_file():
+            raise ValueError(
+                "Native-owned .ai-workflow contains a non-regular entry"
+            )
+
+        snapshot[str(path.relative_to(control))] = path.read_bytes()
+
     return snapshot
+
+
+def _remove_control_entry(control: Path) -> None:
+    """Remove the control entry without following a directory symlink."""
+    if control.is_symlink():
+        control.unlink()
+        return
+
+    if not control.exists():
+        return
+
+    if control.is_dir():
+        shutil.rmtree(control)
+    else:
+        control.unlink()
 
 
 def _restore_control_dir(root: Path, snapshot: dict[str, bytes] | None) -> bool:
     """Restore native-owned lifecycle files if a project command changed them.
 
-    Returns True when mutation was detected and repaired.
+    Returns True when mutation was detected and repaired. Symlinked control
+    entries are unlinked rather than traversed.
     """
     control = root / CONTROL_DIR_NAME
+
     if snapshot is None:
-        if not control.exists():
+        if not control.exists() and not control.is_symlink():
             return False
-        if control.is_dir():
-            shutil.rmtree(control)
-        else:
-            control.unlink()
+
+        _remove_control_entry(control)
         return True
-    current = _snapshot_control_dir(root)
+
+    try:
+        current = _snapshot_control_dir(root)
+    except ValueError:
+        current = None
+
     if current == snapshot:
         return False
-    if control.exists():
-        shutil.rmtree(control)
+
+    _remove_control_entry(control)
     control.mkdir(parents=True, exist_ok=True)
+
     for relative, content in snapshot.items():
         target = control / relative
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(content)
+
     return True
 
 
