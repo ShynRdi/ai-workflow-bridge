@@ -1,3 +1,4 @@
+from orchestrator_project_state import ProjectStateMixin
 from orchestrator_core import CoreMixin
 from orchestrator_messages import MessageMixin
 from orchestrator_response import ResponseMixin
@@ -7,9 +8,30 @@ from orchestrator_execution import ExecutionMixin
 from orchestrator_reporting import ReportingMixin
 
 
-class Orchestrator(CoreMixin, MessageMixin, ResponseMixin, ApprovalMixin, RiskAwareExecutionMixin, ExecutionMixin, ReportingMixin):
+class Orchestrator(ProjectStateMixin, CoreMixin, MessageMixin, ResponseMixin, ApprovalMixin, RiskAwareExecutionMixin, ExecutionMixin, ReportingMixin):
+    def handle(self, message):
+        if message.get("type") == "set_config":
+            message = dict(message)
+            config = dict(message.get("config") or {})
+            old_workspace = str(self.config.get("workspace_root") or "").strip()
+            new_workspace = str(config.get("workspace_root") or old_workspace).strip()
+            for key in ("phase", "stage", "roadmap"):
+                config.pop(key, None)
+            if new_workspace != old_workspace:
+                config["phase"] = ""
+                config["stage"] = ""
+                config["roadmap"] = []
+            message["config"] = config
+        return MessageMixin.handle(self, message)
+
+    def _maybe_apply_canonical_transition(self, contract) -> bool:
+        try:
+            return ProjectStateMixin._maybe_apply_canonical_transition(self, contract)
+        except ValueError:
+            return False
+
     def controller_prompt(self) -> str:
-        base = CoreMixin.controller_prompt(self)
+        base = ProjectStateMixin.controller_prompt(self)
         marker = "9. Every response that advances automation MUST end with exactly one contract:"
         risk_rules = '''9. For EVERY commands[] item, include a semantic risk_assessment. This is advisory only: the Bridge independently computes local policy risk and the LLM assessment can only raise the effective risk, never lower or bypass local policy. Use this rubric:\n- R0: read-only inspection with no meaningful side effects\n- R1: bounded local verification/build activity with minimal side effects\n- R2: reversible workspace mutation or dependency change\n- R3: sensitive/external/remote/production-significant operation\n- R4: destructive, credential-exposing, security-bypassing, or otherwise forbidden operation\nIf uncertain, choose the higher risk. Include confidence 0..1, concise factors, reversible, recommended_action, and dimensions scored 0..3 for filesystem, network, credentials, database, git_remote, system, production, irreversibility, and data_exfiltration. Do not claim that your assessment authorizes execution.'''
         replacement = risk_rules + "\n\n10. Every response that advances automation MUST end with exactly one contract:"

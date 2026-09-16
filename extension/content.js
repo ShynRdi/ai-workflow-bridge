@@ -1,5 +1,5 @@
 (() => {
-  const CONTENT_VERSION = "0.2.5";
+  const CONTENT_VERSION = "0.3.0";
   if (typeof window.__AI_WORKFLOW_BRIDGE_CLEANUP__ === "function") {
     try { window.__AI_WORKFLOW_BRIDGE_CLEANUP__(); } catch {}
   }
