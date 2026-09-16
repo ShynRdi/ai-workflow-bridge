@@ -13,10 +13,22 @@ class Orchestrator(ProjectStateMixin, CoreMixin, MessageMixin, ResponseMixin, Ap
         if message.get("type") == "set_config":
             message = dict(message)
             config = dict(message.get("config") or {})
+            old_workspace = str(self.config.get("workspace_root") or "").strip()
+            new_workspace = str(config.get("workspace_root") or old_workspace).strip()
             for key in ("phase", "stage", "roadmap"):
                 config.pop(key, None)
+            if new_workspace != old_workspace:
+                config["phase"] = ""
+                config["stage"] = ""
+                config["roadmap"] = []
             message["config"] = config
         return MessageMixin.handle(self, message)
+
+    def _maybe_apply_canonical_transition(self, contract) -> bool:
+        try:
+            return ProjectStateMixin._maybe_apply_canonical_transition(self, contract)
+        except ValueError:
+            return False
 
     def controller_prompt(self) -> str:
         base = ProjectStateMixin.controller_prompt(self)
