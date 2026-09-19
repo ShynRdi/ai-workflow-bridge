@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -33,8 +34,23 @@ def main() -> int:
         for label, pattern in PATTERNS:
             if pattern.search(text): failures.append(f"{rel}: matched {label}")
         if rel not in ALLOWED_SECRET_ASSIGNMENT_FILES and SECRET_ASSIGNMENT.search(text): failures.append(f"{rel}: looks like a hard-coded secret assignment")
-    forbidden = [p for p in ROOT.rglob("*") if p.name in {"__pycache__", ".pytest_cache"}]
-    failures.extend(f"{p.relative_to(ROOT)}: generated cache should not be committed" for p in forbidden)
+    try:
+        tracked = subprocess.check_output(
+            ["git", "ls-files", "-z"],
+            cwd=ROOT,
+        ).split(b"\0")
+    except (OSError, subprocess.CalledProcessError) as exc:
+        failures.append(f"unable to inspect tracked files: {exc}")
+        tracked = []
+
+    for raw in tracked:
+        if not raw:
+            continue
+        rel = Path(raw.decode("utf-8", errors="surrogateescape"))
+        if any(part in {"__pycache__", ".pytest_cache"} for part in rel.parts):
+            failures.append(
+                f"{rel.as_posix()}: generated cache should not be committed"
+            )
     if failures:
         print("Public hygiene check FAILED:", file=sys.stderr)
         for item in failures: print(f"- {item}", file=sys.stderr)
