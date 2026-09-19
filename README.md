@@ -8,7 +8,7 @@
 
 AI Workflow Bridge lets a supported web LLM plan work, emit a structured workflow contract, receive terminal evidence, and continue a project — while a deterministic local runner enforces roadmap state, approvals, rate limits, account-safety rules, and command policy.
 
-> **Public Preview 0.2.1:** this is pre-1.0 developer tooling. It is intentionally conservative, but it is **not an OS sandbox**. Read [SECURITY.md](SECURITY.md) before using it on valuable or sensitive systems.
+> **Public Preview 0.3.1:** this is pre-1.0 developer tooling. It is intentionally conservative, but it is **not an OS sandbox**. Read [SECURITY.md](SECURITY.md) before using it on valuable or sensitive systems.
 
 ## Why this exists
 
@@ -41,7 +41,7 @@ Same web LLM conversation
 ## Core behavior
 
 - **Plan → Arm → Run → Change Course → Finish** project lifecycle.
-- Machine-readable canonical roadmap stored outside the conversation.
+- Project-local canonical roadmap stored in `<workspace>/.ai-workflow/ROADMAP.md`, with lifecycle history in `HISTORY.md`.
 - Multi-web-LLM provider registry with explicit support levels.
 - Per-provider optional Chrome site permissions.
 - Local command classification: low-risk / approval / blocked.
@@ -127,6 +127,8 @@ Copy the generated extension ID.
 
 Reload the extension. Mission Control should show the native host as online.
 
+On macOS, the installer copies the native host into `~/Library/Application Support/AI Workflow Bridge/` and generates a launcher using a suitable Python 3.11+ interpreter. This avoids relying on a downloaded source directory or Chrome's GUI `PATH` environment.
+
 ### 3. Open your LLM normally
 
 Sign in manually to the provider website. The Bridge does not handle credentials or login flows.
@@ -135,14 +137,15 @@ Choose the provider in **AI Engine + Safety** and grant site access only for tha
 
 ## Start a project
 
-1. Set the project name, absolute workspace path, project brief, initial phase and stage.
+1. Set the project name, absolute workspace path, and project brief.
 2. Choose the web LLM provider and optionally record the model label you selected manually on the website.
 3. Click **PLAN PROJECT**. No local command should execute during planning.
 4. Review the returned roadmap. The LLM must finish planning with `READY_TO_ARM` and a machine-readable roadmap.
-5. Click **ARM & RUN** only after the roadmap is acceptable.
-6. The Bridge executes low-risk work, pauses for protected actions, and returns evidence to the same conversation.
-7. Use **CHANGE COURSE** for intentional mid-project direction changes.
-8. Use **FINISH PROJECT** to force final verification before the project can enter `COMPLETE`.
+5. The native host stores the accepted roadmap under `<workspace>/.ai-workflow/ROADMAP.md`. Mission Control shows **Current**, **Next**, and **Progress** as read-only state.
+6. Click **ARM & RUN** only after the roadmap is acceptable.
+7. The Bridge executes low-risk work, pauses for protected actions, and returns evidence to the same conversation.
+8. Use **CHANGE COURSE** for intentional mid-project direction changes.
+9. Use **FINISH PROJECT** to force final verification before the project can enter `COMPLETE`.
 
 Full operating instructions: [docs/USER_GUIDE.md](docs/USER_GUIDE.md).
 
@@ -162,7 +165,7 @@ FINISHING
 COMPLETE
 ```
 
-A model cannot silently rewrite the roadmap. See [docs/PROJECT_LIFECYCLE.md](docs/PROJECT_LIFECYCLE.md).
+A model cannot silently rewrite the roadmap. Phase/stage position is native-host owned and derived from the project-local roadmap rather than editable UI fields. See [docs/PROJECT_LIFECYCLE.md](docs/PROJECT_LIFECYCLE.md).
 
 ## Architecture
 

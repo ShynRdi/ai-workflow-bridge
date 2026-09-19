@@ -1,4 +1,4 @@
-# AI Workflow Bridge 0.2.1 — Complete User Guide
+# AI Workflow Bridge 0.3.1 — Complete User Guide
 
 AI Workflow Bridge connects a web LLM conversation to a guarded local runner. The LLM plans and emits a machine-readable workflow contract; the native host executes only approved/local-safe commands, returns stdout/stderr to the same conversation, and stops whenever a human decision or provider safety condition appears.
 
@@ -78,6 +78,14 @@ The Side Panel should show:
 HOST  ONLINE
 ```
 
+On macOS, the installer places the native host under:
+
+```text
+~/Library/Application Support/AI Workflow Bridge/
+```
+
+and creates a launcher using a suitable Python 3.11+ interpreter. Chrome therefore does not need to discover Python through an interactive shell or execute the host directly from a downloaded source directory.
+
 ## 1.3 Open your LLM yourself
 
 Open the provider website normally and sign in manually.
@@ -88,7 +96,7 @@ The Bridge never signs in for you and never asks for your password or cookies.
 
 # 2. Site permissions
 
-Version 0.2.1 does **not** request access to every LLM website at install time.
+Version 0.3.1 does **not** request access to every LLM website at install time.
 
 Choose your Web LLM in **AI Engine + Safety**, then click:
 
@@ -137,8 +145,8 @@ Fill in:
 - Project name
 - Workspace path
 - Project goal / master brief
-- Initial phase
-- Initial stage
+
+Phase and stage are no longer entered manually. After planning, the native host owns the canonical roadmap position. Mission Control displays **Current**, **Next**, and **Progress** as read-only project state.
 
 The **Project goal / master brief** is the main human requirement. Put product requirements, constraints, out-of-scope items, technology requirements, deployment rules and anything the LLM must preserve here.
 
@@ -213,7 +221,19 @@ and end with:
 READY_TO_ARM
 ```
 
-The Bridge stores that roadmap locally as the canonical allowed sequence.
+The Bridge stores that roadmap locally as the canonical allowed sequence in:
+
+```text
+<workspace>/.ai-workflow/ROADMAP.md
+```
+
+Lifecycle transitions are recorded in:
+
+```text
+<workspace>/.ai-workflow/HISTORY.md
+```
+
+These files are native-host owned. The Side Panel displays their current roadmap position but does not provide editable phase/stage controls.
 
 ## Step D — Review before execution
 
@@ -238,7 +258,6 @@ AI WORKFLOW BRIDGE — PROJECT START
 
 Project: <PROJECT NAME>
 Workspace: <WORKSPACE>
-Initial phase/stage: <PHASE> / <STAGE>
 
 MASTER BRIEF
 <YOUR PROJECT GOAL>
@@ -315,7 +334,7 @@ Prose is never executable. Only contract commands are considered by the runner.
 
 # 7. Automatic roadmap progression
 
-The canonical roadmap is stored after planning.
+The canonical roadmap is stored after planning in `<workspace>/.ai-workflow/ROADMAP.md`. The native host owns the current roadmap position and appends lifecycle transitions to `.ai-workflow/HISTORY.md`.
 
 If the current position is:
 
@@ -683,6 +702,27 @@ Check Mission Log for:
 - roadmap mismatch;
 - human decision required;
 - pause/budget/provider safety state.
+
+## Native host repeatedly disconnects on macOS
+
+Re-run the current native-host installer with the extension ID:
+
+```bash
+./install_native_host.sh YOUR_EXTENSION_ID
+```
+
+Version 0.3.1 installs the host into macOS Application Support and pins a suitable Python interpreter. Reload the extension after reinstalling the host.
+
+## Project-local roadmap state
+
+The native host owns:
+
+```text
+<workspace>/.ai-workflow/ROADMAP.md
+<workspace>/.ai-workflow/HISTORY.md
+```
+
+The Bridge rejects symbolic links for the control directory and these native-owned state files. Project commands that attempt to replace or mutate `.ai-workflow` are rejected or repaired before execution continues.
 
 ## Repeated rate-limit/security message
 
