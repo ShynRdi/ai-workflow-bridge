@@ -2,6 +2,21 @@
 
 All notable public changes will be documented here. This project follows Semantic Versioning where Chrome extension version constraints allow it.
 
+## [0.3.2] - 2026-09-23
+
+### Install diagnostics, active-tab binding and roadmap progress
+
+- Added read-only native-host diagnostics for Python, supported platform, local Bridge state, configuration, workspace access and Git workspace detection.
+- Added browser-side diagnostics for extension version, provider configuration, optional site permission, active provider tab, content-script health, content-version compatibility and composer detection.
+- Diagnostics do not request new provider permissions, inject content scripts, submit prompts or execute project commands.
+- Added a Mission Control **RUN DIAGNOSTICS** panel with PASS / WARN / FAIL results and remediation guidance.
+- Changed user-initiated workflow actions to bind from the currently active supported LLM tab instead of falling back to another matching provider tab.
+- Preserved the bound tab across automated workflow turns so changing browser focus does not move a project into another conversation.
+- Ignored workflow responses and provider safety signals originating from non-bound LLM tabs.
+- Added a canonical-roadmap progress bar based on completed stages versus total stages, including percentage and remaining-stage count.
+- Bumped extension, content-script and Mission Control versions to 0.3.2.
+- Added diagnostics, active-tab, Mission Control and roadmap-progress regression coverage.
+
 ## [0.3.1] - 2026-09-16
 
 ### Native host reliability and project-state hardening

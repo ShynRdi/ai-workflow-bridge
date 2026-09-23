@@ -48,3 +48,80 @@ def test_content_version_matches_manifest_and_ping_exposes_provider_status():
     content = (EXT / "content.js").read_text()
     assert f'const CONTENT_VERSION = "{manifest["version"]}"' in content
     assert "providerStatus" in content
+
+
+def test_browser_diagnostics_are_read_only_and_cover_bridge_health():
+    background = (EXT / "background.js").read_text()
+
+    assert "async function collectBrowserDiagnostics()" in background
+    assert "async function runDiagnostics()" in background
+    assert 'command.action === "diagnostics"' in background
+    assert 'type: "diagnostics"' in background
+
+    assert "chrome.permissions.contains" in background
+    assert 'type: "BRIDGE_PING"' in background
+    assert '"content_version"' in background
+    assert '"composer"' in background
+
+    diagnostics_start = background.index(
+        "async function collectBrowserDiagnostics()"
+    )
+    diagnostics_end = background.index(
+        "async function runDiagnostics()"
+    )
+    diagnostics_block = background[
+        diagnostics_start:diagnostics_end
+    ]
+
+    assert "chrome.permissions.request" not in diagnostics_block
+    assert "chrome.scripting.executeScript" not in diagnostics_block
+    assert "SEND_TO_LLM" not in diagnostics_block
+
+def test_user_actions_bind_to_active_llm_tab_and_do_not_fallback():
+    background = (EXT / "background.js").read_text()
+
+    assert "async function findActiveLlmTab()" in background
+    assert 'active: true' in background
+    assert 'currentWindow: true' in background
+
+    lifecycle = background[
+        background.index(
+            '["plan_project", "arm", "change_course", "finish_project"]'
+        ):
+    ]
+
+    assert "findActiveLlmTab()" in lifecycle
+
+
+def test_bound_workflow_ignores_other_llm_tabs():
+    background = (EXT / "background.js").read_text()
+
+    assert (
+        "Response came from a non-bound LLM tab"
+        in background
+    )
+
+    assert (
+        "Safety signal came from a non-bound LLM tab"
+        in background
+    )
+
+    assert "await getPinnedLlmTabId()" in background
+
+
+def test_diagnostics_do_not_search_other_provider_tabs():
+    background = (EXT / "background.js").read_text()
+
+    start = background.index(
+        "async function findDiagnosticProviderTab("
+    )
+    end = background.index(
+        "async function collectBrowserDiagnostics()",
+        start,
+    )
+
+    block = background[start:end]
+
+    assert "active: true" in block
+    assert "currentWindow: true" in block
+    assert "url: provider.origins" not in block

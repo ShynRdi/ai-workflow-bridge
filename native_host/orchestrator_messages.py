@@ -3,11 +3,18 @@ from __future__ import annotations
 import threading
 from typing import Any
 from config import save_config
+from diagnostics import collect_diagnostics
 
 class MessageMixin:
     def handle(self, message: dict[str, Any]) -> None:
         msg_type = message.get("type")
-        if msg_type == "ping":
+        if msg_type == "diagnostics":
+            self.emit({
+                "kind": "diagnostics_result",
+                "request_id": str(message.get("request_id") or ""),
+                "diagnostics": collect_diagnostics(self.config),
+            })
+        elif msg_type == "ping":
             self.emit({"kind":"host_status","connected":True,"text":"Native host is online"}); self.emit({"kind":"state","state":self.state()})
         elif msg_type == "get_state": self.emit({"kind":"state","state":self.state()})
         elif msg_type == "set_config":

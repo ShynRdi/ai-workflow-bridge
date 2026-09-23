@@ -32,6 +32,134 @@ async function grantProviderAccess({ quiet = false } = {}) { const provider = aw
 function numberValue(id, fallback) { const value = Number($(id).value); return Number.isFinite(value) ? value : fallback; }
 function gatherConfig() { return { project_name: $("projectName").value.trim(), project_goal: $("projectGoal").value.trim(), workspace_root: $("workspaceRoot").value.trim(), provider_mode: $("providerAuto").checked ? "auto" : "manual", provider_id: $("providerId").value, model_label: $("modelLabel").value.trim(), auto_run_low_risk: $("autoRunLowRisk").checked, min_turn_interval_seconds: numberValue("minTurnInterval", 8), max_turns_per_hour: numberValue("maxTurnsHour", 20), max_turns_per_session: numberValue("maxTurnsSession", 25), max_runtime_minutes: numberValue("maxRuntimeMinutes", 90), bot_token: $("botToken").value.trim(), chat_id: $("chatId").value.trim() }; }
 async function saveProject({ log = true } = {}) { const config = gatherConfig(); await command("save_config", { config }); if (log) addLog("SAVED", "Project, AI Engine, and safety limits saved locally."); }
+function diagnosticCounts(checks = []) {
+  return checks.reduce(
+    (counts, item) => {
+      const status = String(item?.status || "warn").toLowerCase();
+      if (status === "pass") counts.pass += 1;
+      else if (status === "fail") counts.fail += 1;
+      else counts.warn += 1;
+      return counts;
+    },
+    { pass: 0, warn: 0, fail: 0 },
+  );
+}
+
+function diagnosticBadge(status = "warn") {
+  const value = String(status || "warn").toLowerCase();
+  if (value === "pass") return "PASS";
+  if (value === "fail") return "FAIL";
+  return "WARN";
+}
+
+function renderDiagnostics(result = {}) {
+  const checks = Array.isArray(result.checks) ? result.checks : [];
+  const overall = String(result.overall || "warn").toLowerCase();
+  const counts = diagnosticCounts(checks);
+
+  $("diagnosticsOverall").textContent = diagnosticBadge(overall);
+  $("diagnosticsOverall").dataset.status = overall;
+
+  $("diagnosticsSummary").textContent =
+    `${counts.pass} pass · ${counts.warn} warning · ${counts.fail} fail`;
+
+  const list = $("diagnosticsList");
+  list.replaceChildren();
+
+  if (!checks.length) {
+    const empty = document.createElement("div");
+    empty.className = "diagnostic-empty";
+    empty.textContent = "No diagnostic results were returned.";
+    list.append(empty);
+    return;
+  }
+
+  for (const item of checks) {
+    const status = String(item.status || "warn").toLowerCase();
+
+    const row = document.createElement("div");
+    row.className = `diagnostic-row diagnostic-${status}`;
+
+    const statusNode = document.createElement("strong");
+    statusNode.className = "diagnostic-status";
+    statusNode.textContent = diagnosticBadge(status);
+
+    const body = document.createElement("div");
+
+    const label = document.createElement("b");
+    label.textContent = item.label || item.id || "Diagnostic check";
+
+    const detail = document.createElement("p");
+    detail.textContent = item.detail || "";
+
+    body.append(label, detail);
+
+    if (item.remediation) {
+      const remediation = document.createElement("small");
+      remediation.className = "diagnostic-remediation";
+      remediation.textContent = `Fix: ${item.remediation}`;
+      body.append(remediation);
+    }
+
+    row.append(statusNode, body);
+    list.append(row);
+  }
+}
+
+async function runSystemDiagnostics() {
+  const button = $("runDiagnostics");
+
+  button.disabled = true;
+  button.textContent = "RUNNING…";
+  $("diagnosticsOverall").textContent = "RUNNING";
+  $("diagnosticsOverall").dataset.status = "running";
+  $("diagnosticsSummary").textContent =
+    "Inspecting local and browser integration…";
+
+  try {
+    const response = await command("diagnostics");
+
+    if (!response?.ok || !response?.diagnostics) {
+      throw new Error(
+        response?.error || "Diagnostics did not return a result.",
+      );
+    }
+
+    renderDiagnostics(response.diagnostics);
+
+    const overall = String(
+      response.diagnostics.overall || "warn",
+    ).toUpperCase();
+
+    addLog(
+      overall === "PASS" ? "HEALTHY" : "DIAG",
+      `System diagnostics completed: ${overall}.`,
+    );
+  } catch (error) {
+    renderDiagnostics({
+      overall: "fail",
+      checks: [
+        {
+          id: "diagnostics_runtime",
+          label: "Diagnostics runtime",
+          status: "fail",
+          detail: String(error?.message || error),
+          remediation:
+            "Reload AI Workflow Bridge and retry diagnostics.",
+        },
+      ],
+    });
+
+    addLog(
+      "CRASH",
+      `Diagnostics failed: ${String(error?.message || error)}`,
+    );
+  } finally {
+    button.disabled = false;
+    button.textContent = "🩺 RUN DIAGNOSTICS";
+  }
+}
+
 function showApproval(event) { currentApprovalId = event.approval_id; $("approvalSummary").textContent = event.summary || "A protected action needs your approval."; $("approvalCommand").textContent = event.command || event.details || ""; $("approvalImpact").textContent = event.impact || "The workflow is paused until you decide."; $("approvalPanel").classList.remove("hidden"); }
 function setLifecycleButtons(state) { const lifecycle = state.lifecycle || state.status || "setup"; $("armWorkflow").disabled = !["ready_to_arm", "idle", "paused", "protocol_error"].includes(lifecycle) && lifecycle !== "setup"; $("finishProject").disabled = ["setup", "planning", "complete"].includes(lifecycle); }
 function fillConfig(config) { if (config.project_name != null) $("projectName").value = config.project_name; if (config.project_goal != null) $("projectGoal").value = config.project_goal; if (config.workspace_root != null) $("workspaceRoot").value = config.workspace_root; if (config.provider_id && utils.getProvider(config.provider_id)) $("providerId").value = config.provider_id; if (config.model_label != null) $("modelLabel").value = config.model_label; $("providerAuto").checked = config.provider_mode === "auto"; $("autoRunLowRisk").checked = config.auto_run_low_risk !== false; if (config.min_turn_interval_seconds != null) $("minTurnInterval").value = config.min_turn_interval_seconds; if (config.max_turns_per_hour != null) $("maxTurnsHour").value = config.max_turns_per_hour; if (config.max_turns_per_session != null) $("maxTurnsSession").value = config.max_turns_per_session; if (config.max_runtime_minutes != null) $("maxRuntimeMinutes").value = config.max_runtime_minutes; if (config.bot_configured && !$("botToken").value) $("botToken").placeholder = "Configured locally — enter only to replace"; if (config.chat_id != null) $("chatId").value = config.chat_id; updateProviderCard(); }
@@ -48,6 +176,7 @@ function handleEvent(event) { if (!event) return; if (event.kind === "host_statu
   } else if (event.kind === "state") { const state = event.state || {}; lastState = state; const lifecycle = state.lifecycle || state.status || "setup"; $("runStatus").textContent = String(lifecycle).replaceAll("_", " ").toUpperCase(); $("runStatusDetail").textContent = state.current_step || "No active workflow"; fillConfig(state.config || {}); fillBudget(state.budget || {}, state.config || {}); setLifecycleButtons(state); if (state.active_provider_name) { $("activeProvider").textContent = state.active_provider_name.toUpperCase().slice(0,13); $("providerDetail").textContent = "active browser adapter"; } } else if (event.kind === "approval_required") { showApproval(event); addLog("WAIT!", event.summary || "Approval required"); } else if (event.kind === "approval_resolved") { $("approvalPanel").classList.add("hidden"); currentApprovalId = null; addLog("DECIDED", `${event.decision || "decision"}: ${event.summary || "approval resolved"}`); } else if (event.kind === "step") { $("runStatus").textContent = (event.status || "RUNNING").replaceAll("_", " ").toUpperCase(); $("runStatusDetail").textContent = event.title || event.text || "Workflow step"; addLog(event.badge || "BAM", event.text || event.title || "Step update"); } else if (event.kind === "error") { $("runStatus").textContent = "PAUSED"; $("runStatusDetail").textContent = event.text || "Workflow error"; addLog("CRASH", event.text || "Unknown error"); } else if (event.kind === "info") addLog(event.badge || "INFO", event.text || "Update"); }
 chrome.runtime.onMessage.addListener((message) => { if (message?.type === "BRIDGE_EVENT") handleEvent(message.payload); });
 populateProviders(); $("providerId").value = "chatgpt"; updateProviderCard(); $("providerId").addEventListener("change", updateProviderCard); $("providerAuto").addEventListener("change", updateProviderCard); $("modelLabel").addEventListener("input", updateProviderCard); $("grantProvider").addEventListener("click", () => grantProviderAccess().catch((e) => addLog("NOPE", e.message))); $("saveConfig").addEventListener("click", () => saveProject().then(() => setTimeout(() => command("get_state"), 200)).catch((e) => addLog("CRASH", e.message)));
+$("runDiagnostics").addEventListener("click", () => runSystemDiagnostics());
 $("planProject").addEventListener("click", async () => { try { if (!$("projectGoal").value.trim()) throw new Error("Add a project goal/master brief before planning."); const p = await grantProviderAccess({ quiet: true }); await saveProject({ log: false }); await command("plan_project"); addLog("PLAN!", `Sent the protected project-start prompt to ${p.name}.`); } catch (e) { addLog("CRASH", e.message); } });
 $("armWorkflow").addEventListener("click", async () => { try { const p = await grantProviderAccess({ quiet: true }); await saveProject({ log: false }); await command("arm"); addLog("ZAP!", `Arming the current ${p.name} thread.`); } catch (e) { addLog("CRASH", e.message); } });
 $("pauseWorkflow").addEventListener("click", () => command("pause")); $("resumeWorkflow").addEventListener("click", () => command("resume")); $("refreshState").addEventListener("click", () => command("get_state")); $("resetSession").addEventListener("click", () => command("reset_session"));

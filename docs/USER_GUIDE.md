@@ -1,4 +1,4 @@
-# AI Workflow Bridge 0.3.1 — Complete User Guide
+# AI Workflow Bridge 0.3.2 — Complete User Guide
 
 AI Workflow Bridge connects a web LLM conversation to a guarded local runner. The LLM plans and emits a machine-readable workflow contract; the native host executes only approved/local-safe commands, returns stdout/stderr to the same conversation, and stops whenever a human decision or provider safety condition appears.
 
@@ -96,7 +96,7 @@ The Bridge never signs in for you and never asks for your password or cookies.
 
 # 2. Site permissions
 
-Version 0.3.1 does **not** request access to every LLM website at install time.
+Version 0.3.2 does **not** request access to every LLM website at install time.
 
 Choose your Web LLM in **AI Engine + Safety**, then click:
 
@@ -107,6 +107,59 @@ GRANT SITE ACCESS
 Chrome grants the extension access only to that selected provider's site.
 
 This is deliberate. The extension has no `cookies` permission and does not need access to unrelated websites.
+
+## 2.1 System Diagnostics
+
+Mission Control includes:
+
+```text
+🩺 RUN DIAGNOSTICS
+```
+
+Diagnostics are read-only. They inspect the local and browser integration without sending an LLM prompt, requesting a new provider permission, injecting a content script or executing a project command.
+
+Checks include:
+
+```text
+Native host / Python / platform
+Bridge local state and permissions
+Local configuration
+Workspace read/write access
+Git workspace detection
+Extension version
+Provider configuration
+Provider site permission
+Active provider tab
+Content-script health
+Content/extension version match
+Provider composer detection
+```
+
+Each result is reported as `PASS`, `WARN`, or `FAIL`, with remediation guidance where applicable.
+
+A `WARN` can be expected when, for example, the selected provider tab is not currently active or its content script has not yet been loaded.
+
+## 2.2 Project Progress
+
+Mission Control derives project progress from the canonical project-local roadmap:
+
+```text
+<workspace>/.ai-workflow/ROADMAP.md
+```
+
+Progress is calculated from completed canonical stages divided by total canonical stages. The current stage does not count as complete until the native host records the corresponding roadmap transition or project completion.
+
+The UI shows:
+
+```text
+Current
+Next
+completed / total
+percentage
+remaining stages
+```
+
+If an approved Course Change replaces the roadmap, progress is recalculated from the updated canonical roadmap while preserving completed stages that remain valid in the replacement roadmap.
 
 ---
 
@@ -179,13 +232,15 @@ Keep conservative defaults initially.
 
 ## Step C — PLAN PROJECT
 
-Click:
+First activate the exact supported LLM conversation you want to use for this project.
+
+Then click:
 
 ```text
 ✦ PLAN PROJECT
 ```
 
-The Bridge generates and sends the initial planning prompt automatically.
+The active supported LLM tab becomes the workflow's bound conversation. The Bridge generates and sends the initial planning prompt automatically.
 
 No local commands should run during this stage.
 
@@ -289,7 +344,7 @@ You normally do not need to copy/paste this prompt yourself; the Side Panel buil
 
 After you click **ARM & RUN**:
 
-1. The extension pins the current supported LLM tab.
+1. The extension binds the workflow to the currently active supported LLM tab.
 2. The native host sends the controller protocol.
 3. The LLM emits an `AI_WORKFLOW` contract.
 4. The Bridge validates phase/stage against the stored roadmap.
@@ -300,6 +355,8 @@ After you click **ARM & RUN**:
 9. stdout/stderr/exit code/Git state return to the same LLM conversation.
 10. The LLM analyzes the real terminal result and emits the next contract.
 11. The loop continues until pause, decision, safety brake, budget brake, stage stop, or project finish.
+
+Once bound, changing browser focus to another ChatGPT/Claude/provider tab does not move the workflow. Responses and provider-safety events from other supported LLM tabs are ignored for that bound run.
 
 Typical contract:
 
@@ -613,7 +670,11 @@ No policy should be interpreted as permission to run production changes without 
 
 # 16. Multi-LLM behavior
 
-The workflow uses one selected web LLM at a time.
+The workflow uses one selected web LLM conversation at a time.
+
+User-initiated PLAN / ARM / CHANGE COURSE / FINISH actions bind from the active supported LLM tab. Once a run is bound, later automated turns stay on that same browser tab even if another tab becomes active.
+
+If several conversations from the same provider are open, make the intended conversation active before starting or re-arming the workflow.
 
 There is no automatic provider fallback.
 
@@ -685,7 +746,7 @@ Common badges:
 
 ## Provider tab not found
 
-Open the selected web provider in a normal Chrome tab. If Auto Detect is enabled, make that tab active.
+Open the selected web provider in a normal Chrome tab and make the intended conversation active before starting the workflow or running diagnostics.
 
 ## Site access not granted
 
@@ -711,7 +772,7 @@ Re-run the current native-host installer with the extension ID:
 ./install_native_host.sh YOUR_EXTENSION_ID
 ```
 
-Version 0.3.1 installs the host into macOS Application Support and pins a suitable Python interpreter. Reload the extension after reinstalling the host.
+Version 0.3.2 installs the host into macOS Application Support and pins a suitable Python interpreter. Reload the extension after reinstalling the host.
 
 ## Project-local roadmap state
 

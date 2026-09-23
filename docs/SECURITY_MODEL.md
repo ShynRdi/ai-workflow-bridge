@@ -45,6 +45,20 @@ Redaction is defense-in-depth and cannot recognize every proprietary credential 
 
 Downloads are quarantined into Bridge-controlled run storage; hashes are recorded and ZIP path traversal is rejected before use. A file still requires normal policy/approval controls before executing scripts from it.
 
+### Browser-tab binding
+
+User-initiated lifecycle actions bind the workflow to the currently active supported LLM tab.
+
+Automated follow-up turns continue through that bound tab rather than whichever matching provider tab happens to be active later. Completed responses and provider-safety signals from other supported LLM tabs are ignored for the bound workflow.
+
+This reduces cross-conversation confusion when multiple tabs from the same provider are open.
+
+### Diagnostics
+
+System diagnostics are designed as read-only health inspection. Running diagnostics does not request new provider permissions, inject a content script, submit an LLM prompt or execute a project command.
+
+Diagnostics may report a warning when a provider tab/content script is unavailable rather than mutating browser state to repair it automatically.
+
 ## Known limitations
 
 ### No OS sandbox

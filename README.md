@@ -8,7 +8,7 @@
 
 AI Workflow Bridge lets a supported web LLM plan work, emit a structured workflow contract, receive terminal evidence, and continue a project — while a deterministic local runner enforces roadmap state, approvals, rate limits, account-safety rules, and command policy.
 
-> **Public Preview 0.3.1:** this is pre-1.0 developer tooling. It is intentionally conservative, but it is **not an OS sandbox**. Read [SECURITY.md](SECURITY.md) before using it on valuable or sensitive systems.
+> **Public Preview 0.3.2:** this is pre-1.0 developer tooling. It is intentionally conservative, but it is **not an OS sandbox**. Read [SECURITY.md](SECURITY.md) before using it on valuable or sensitive systems.
 
 ## Why this exists
 
@@ -42,6 +42,9 @@ Same web LLM conversation
 
 - **Plan → Arm → Run → Change Course → Finish** project lifecycle.
 - Project-local canonical roadmap stored in `<workspace>/.ai-workflow/ROADMAP.md`, with lifecycle history in `HISTORY.md`.
+- Canonical roadmap progress bar showing completed and remaining stages.
+- Read-only system diagnostics for native-host, workspace, Git, extension, provider permission, active tab, content-script and version health.
+- Active-tab binding: user-initiated workflows start from the currently active supported LLM tab and remain bound to that conversation for the run.
 - Multi-web-LLM provider registry with explicit support levels.
 - Per-provider optional Chrome site permissions.
 - Local command classification: low-risk / approval / blocked.
@@ -127,7 +130,11 @@ Copy the generated extension ID.
 
 Reload the extension. Mission Control should show the native host as online.
 
+After installation, use **RUN DIAGNOSTICS** in Mission Control for a read-only health check of the Bridge installation and browser integration.
+
 On macOS, the installer copies the native host into `~/Library/Application Support/AI Workflow Bridge/` and generates a launcher using a suitable Python 3.11+ interpreter. This avoids relying on a downloaded source directory or Chrome's GUI `PATH` environment.
+
+On Linux, the Native Messaging manifest currently points to the launcher in the installed/checked-out project directory. Keep that directory in place, or rerun the installer after moving it.
 
 ### 3. Open your LLM normally
 
@@ -139,7 +146,7 @@ Choose the provider in **AI Engine + Safety** and grant site access only for tha
 
 1. Set the project name, absolute workspace path, and project brief.
 2. Choose the web LLM provider and optionally record the model label you selected manually on the website.
-3. Click **PLAN PROJECT**. No local command should execute during planning.
+3. Activate the exact supported LLM conversation you want this project to use, then click **PLAN PROJECT**. No local command should execute during planning.
 4. Review the returned roadmap. The LLM must finish planning with `READY_TO_ARM` and a machine-readable roadmap.
 5. The native host stores the accepted roadmap under `<workspace>/.ai-workflow/ROADMAP.md`. Mission Control shows **Current**, **Next**, and **Progress** as read-only state.
 6. Click **ARM & RUN** only after the roadmap is acceptable.
