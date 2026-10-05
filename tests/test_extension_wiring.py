@@ -125,3 +125,105 @@ def test_diagnostics_do_not_search_other_provider_tabs():
     assert "active: true" in block
     assert "currentWindow: true" in block
     assert "url: provider.origins" not in block
+
+
+def test_autonomous_send_is_bound_tab_only():
+    background = (EXT / "background.js").read_text(
+        encoding="utf-8"
+    )
+
+    assert "async function findBoundLlmTab(" in background
+    assert "async function inspectActiveLlmTab()" in background
+    assert "findLlmTab(" not in background
+
+    start = background.index(
+        "async function findBoundLlmTab("
+    )
+    end = background.index(
+        "function receiverMissing",
+        start,
+    )
+
+    block = background[start:end]
+
+    assert "chrome.tabs.get(boundTabId)" in block
+    assert "chrome.tabs.query" not in block
+
+
+def test_unbound_provider_events_are_ignored():
+    background = (EXT / "background.js").read_text(
+        encoding="utf-8"
+    )
+
+    assert background.count("boundTabId == null") >= 2
+
+
+def test_recovery_rebinds_only_after_active_tab_validation():
+    background = (EXT / "background.js").read_text(
+        encoding="utf-8"
+    )
+
+    start = background.index(
+        'command.action === "recovery_prepare"'
+    )
+    end = background.index(
+        'command.action === "recovery_discard"',
+        start,
+    )
+
+    block = background[start:end]
+
+    assert "inspectActiveLlmTab()" in block
+    assert "recoveryProviderId" in block
+    assert "pinLlmTab(found.tab.id)" in block
+    assert "tab_id: found.tab.id" in block
+    assert "provider: found.provider.id" in block
+
+
+def test_generic_send_text_does_not_rebind_workflow():
+    background = (EXT / "background.js").read_text(
+        encoding="utf-8"
+    )
+
+    start = background.index(
+        'command.action === "send_text"'
+    )
+    end = background.index(
+        "let bound = null",
+        start,
+    )
+
+    block = background[start:end]
+
+    assert "inspectActiveLlmTab()" in block
+    assert "findActiveLlmTab()" not in block
+    assert "pinLlmTab(" not in block
+
+
+
+def test_recovery_requires_loaded_context_before_tab_binding():
+    background = (EXT / "background.js").read_text(
+        encoding="utf-8"
+    )
+
+    start = background.index(
+        'command.action === "recovery_prepare"'
+    )
+    end = background.index(
+        'command.action === "recovery_discard"',
+        start,
+    )
+
+    block = background[start:end]
+
+    context_check = block.index(
+        "if (!recoveryProviderId)"
+    )
+    inspect = block.index(
+        "inspectActiveLlmTab()"
+    )
+    bind = block.index(
+        "pinLlmTab(found.tab.id)"
+    )
+
+    assert context_check < inspect < bind

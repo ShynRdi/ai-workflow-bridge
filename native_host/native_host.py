@@ -13,7 +13,17 @@ write_lock=threading.Lock()
 def emit(message: dict[str, Any]) -> None:
     with write_lock: write_message(message)
 def main() -> int:
-    orchestrator=Orchestrator(emit); emit({"kind":"host_status","connected":True,"text":"Native host started"})
+    orchestrator=Orchestrator(emit)
+    emit({
+        "kind": "host_status",
+        "connected": True,
+        "text": "Native host started",
+    })
+    emit({
+        "kind": "state",
+        "state": orchestrator.state(),
+    })
+
     while True:
         try:
             message=read_message()

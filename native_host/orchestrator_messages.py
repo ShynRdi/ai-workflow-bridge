@@ -8,6 +8,105 @@ from diagnostics import collect_diagnostics
 class MessageMixin:
     def handle(self, message: dict[str, Any]) -> None:
         msg_type = message.get("type")
+
+        recovery_safe_messages = {
+            "diagnostics",
+            "ping",
+            "get_state",
+            "recovery_prepare",
+            "recovery_discard",
+        }
+
+        if (
+            self.lifecycle == "recovery_required"
+            and msg_type not in recovery_safe_messages
+        ):
+            self.emit_event({
+                "kind": "error",
+                "badge": "RECOVER!",
+                "status": "recovery_required",
+                "text": (
+                    "An interrupted workflow requires explicit "
+                    "recovery review before any project action "
+                    "can continue."
+                ),
+            })
+            self.emit({
+                "kind": "state",
+                "state": self.state(),
+            })
+            return
+
+        if msg_type == "recovery_prepare":
+            tab_id = message.get("tab_id")
+            provider = str(
+                message.get("provider") or ""
+            ).strip()
+
+            if not isinstance(tab_id, int) or tab_id <= 0:
+                self.emit_event({
+                    "kind": "error",
+                    "status": "recovery_required",
+                    "text": (
+                        "Recovery requires an explicit active "
+                        "browser-tab binding."
+                    ),
+                })
+                return
+
+            if not provider:
+                self.emit_event({
+                    "kind": "error",
+                    "status": "recovery_required",
+                    "text": (
+                        "Recovery requires the active provider "
+                        "identity."
+                    ),
+                })
+                return
+
+            if provider != self.active_provider:
+                self.emit_event({
+                    "kind": "error",
+                    "status": "recovery_required",
+                    "text": (
+                        f"Recovery was interrupted on "
+                        f"{self.provider_name(self.active_provider)}, "
+                        f"but the rebound tab is "
+                        f"{self.provider_name(provider)}. "
+                        "Activate the original provider or discard "
+                        "the interrupted run."
+                    ),
+                })
+                self.emit({
+                    "kind": "state",
+                    "state": self.state(),
+                })
+                return
+
+            if not self.resolve_recovery("prepare"):
+                self.emit_event({
+                    "kind": "error",
+                    "text": (
+                        "There is no interrupted workflow waiting "
+                        "for recovery review."
+                    ),
+                })
+
+            return
+
+        if msg_type == "recovery_discard":
+            if not self.resolve_recovery("discard"):
+                self.emit_event({
+                    "kind": "error",
+                    "text": (
+                        "There is no interrupted workflow waiting "
+                        "for recovery review."
+                    ),
+                })
+
+            return
+
         if msg_type == "diagnostics":
             self.emit({
                 "kind": "diagnostics_result",

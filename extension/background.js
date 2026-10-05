@@ -9,6 +9,7 @@ let nativeHandshakeTimer = null;
 let nativeDisconnectReason = "";
 let reconnectAttempt = 0;
 let lastLlmTabId = null;
+let recoveryProviderId = null;
 let responseWatchdog = null;
 
 const NATIVE_HANDSHAKE_TIMEOUT_MS = 8000;
@@ -184,7 +185,7 @@ async function getPinnedLlmTabId() {
   return null;
 }
 
-async function findActiveLlmTab() {
+async function inspectActiveLlmTab() {
   const selection = await selectedProviderConfig();
   const wanted =
     selection.mode === "auto"
@@ -218,40 +219,80 @@ async function findActiveLlmTab() {
     );
   }
 
-  await pinLlmTab(tab.id);
-
-  return {
-    tab,
-    provider,
-  };
+  return { tab, provider };
 }
 
-async function findLlmTab(preferredTabId = null) {
-  const selection = await selectedProviderConfig();
-  const wanted = selection.mode === "auto" ? null : utils.getProvider(selection.id);
-  const acceptable = (tab) => {
-    const p = providerForUrl(tab?.url || "");
-    return Boolean(p && (!wanted || p.id === wanted.id));
-  };
+async function findActiveLlmTab() {
+  const found = await inspectActiveLlmTab();
 
-  for (const tabId of [preferredTabId, await getPinnedLlmTabId()]) {
-    if (tabId == null) continue;
-    try {
-      const tab = await chrome.tabs.get(tabId);
-      if (acceptable(tab)) { await pinLlmTab(tab.id); return { tab, provider: providerForUrl(tab.url) }; }
-    } catch {}
+  await pinLlmTab(found.tab.id);
+
+  return found;
+}
+
+async function clearPinnedLlmTab() {
+  lastLlmTabId = null;
+
+  try {
+    await chrome.storage.session.remove(
+      PINNED_TAB_STORAGE_KEY,
+    );
+  } catch {}
+}
+
+async function findBoundLlmTab(expectedTabId = null) {
+  const boundTabId = await getPinnedLlmTabId();
+
+  if (boundTabId == null) {
+    return null;
   }
 
-  const activeTabs = await chrome.tabs.query({ active: true, currentWindow: true });
-  const active = activeTabs.find(acceptable);
-  if (active?.id != null) { await pinLlmTab(active.id); return { tab: active, provider: providerForUrl(active.url) }; }
+  if (
+    expectedTabId != null &&
+    expectedTabId !== boundTabId
+  ) {
+    throw new Error(
+      "The workflow attempted to use a tab other than its explicitly bound LLM tab.",
+    );
+  }
 
-  const patterns = wanted ? wanted.origins : utils.allOrigins();
-  const tabs = await chrome.tabs.query({ url: patterns });
-  const tab = tabs.find((item) => item.active && acceptable(item)) || tabs.find(acceptable);
-  if (!tab?.id) return null;
-  await pinLlmTab(tab.id);
-  return { tab, provider: providerForUrl(tab.url) };
+  let tab;
+
+  try {
+    tab = await chrome.tabs.get(boundTabId);
+  } catch {
+    await clearPinnedLlmTab();
+
+    throw new Error(
+      "The bound LLM tab no longer exists. Explicit re-binding is required.",
+    );
+  }
+
+  const provider = providerForUrl(tab.url || "");
+
+  if (!provider) {
+    await clearPinnedLlmTab();
+
+    throw new Error(
+      "The bound tab is no longer a supported LLM page. Explicit re-binding is required.",
+    );
+  }
+
+  const selection = await selectedProviderConfig();
+  const wanted =
+    selection.mode === "auto"
+      ? null
+      : utils.getProvider(selection.id);
+
+  if (wanted && provider.id !== wanted.id) {
+    await clearPinnedLlmTab();
+
+    throw new Error(
+      `The bound tab is ${provider.name}, but Mission Control expects ${wanted.name}. Explicit re-binding is required.`,
+    );
+  }
+
+  return { tab, provider };
 }
 
 function receiverMissing(error) {
@@ -288,15 +329,66 @@ async function sendToContent(tabId, message) {
   }
 }
 
-async function sendTextToLlm(text, submit = true, preferredTabId = null) {
-  const found = await findLlmTab(preferredTabId || lastLlmTabId);
-  if (!found?.tab?.id) throw new Error("No matching supported LLM tab found. Open the selected provider first.");
-  await pinLlmTab(found.tab.id);
+async function sendTextToFoundLlm(
+  found,
+  text,
+  submit = true,
+) {
+  if (!found?.tab?.id || !found?.provider) {
+    throw new Error("No supported LLM tab was supplied.");
+  }
+
   await ensureContentScript(found.tab.id);
-  const result = await sendToContent(found.tab.id, { type: "SEND_TO_LLM", payload: { text, submit } });
-  if (!result?.ok) throw new Error(result?.error || `${found.provider.name} content script rejected the prompt`);
-  if (submit && result?.submitted !== true) throw new Error(`${found.provider.name} prompt was not confirmed as submitted`);
-  return { ...result, provider: found.provider.id, providerName: found.provider.name, tabId: found.tab.id };
+
+  const result = await sendToContent(
+    found.tab.id,
+    {
+      type: "SEND_TO_LLM",
+      payload: { text, submit },
+    },
+  );
+
+  if (!result?.ok) {
+    throw new Error(
+      result?.error ||
+      `${found.provider.name} content script rejected the prompt`,
+    );
+  }
+
+  if (submit && result?.submitted !== true) {
+    throw new Error(
+      `${found.provider.name} prompt was not confirmed as submitted`,
+    );
+  }
+
+  return {
+    ...result,
+    provider: found.provider.id,
+    providerName: found.provider.name,
+    tabId: found.tab.id,
+  };
+}
+
+async function sendTextToLlm(
+  text,
+  submit = true,
+  expectedTabId = null,
+) {
+  const found = await findBoundLlmTab(
+    expectedTabId,
+  );
+
+  if (!found?.tab?.id) {
+    throw new Error(
+      "No LLM tab is explicitly bound to this workflow. Activate the intended conversation and re-arm first.",
+    );
+  }
+
+  return sendTextToFoundLlm(
+    found,
+    text,
+    submit,
+  );
 }
 
 function clearResponseWatchdog() { if (responseWatchdog) clearTimeout(responseWatchdog); responseWatchdog = null; }
@@ -348,7 +440,9 @@ async function downloadOneCandidate(candidate, tabId, provider) {
 }
 
 async function handleDownloadRequest(message) {
-  const found = await findLlmTab(message.tab_id || lastLlmTabId);
+  const found = await findBoundLlmTab(
+    message.tab_id || null,
+  );
   if (!found?.tab?.id) throw new Error("No provider tab found for attachment download");
   const results = [];
   for (const candidate of Array.isArray(message.candidates) ? message.candidates : []) results.push(await downloadOneCandidate(candidate, found.tab.id, found.provider));
@@ -774,6 +868,29 @@ async function handleNativeMessage(message) {
   }
 
   broadcast(message);
+
+  if (message?.kind === "state") {
+    const lifecycle = String(
+      message.state?.lifecycle || "",
+    );
+
+    if (lifecycle === "recovery_required") {
+      recoveryProviderId = String(
+        message.state?.recovery?.active_provider ||
+        message.state?.active_provider ||
+        "",
+      ) || null;
+
+      await clearPinnedLlmTab();
+    } else {
+      recoveryProviderId = null;
+
+      if (lifecycle === "complete") {
+        await clearPinnedLlmTab();
+      }
+    }
+  }
+
   if (message?.kind === "send_to_chatgpt" || message?.kind === "send_to_llm") {
     try {
       const result = await sendTextToLlm(message.text, true, message.tab_id || null);
@@ -795,7 +912,11 @@ async function getDownloadCandidates(tabId, responseKey) {
 }
 
 chrome.runtime.onInstalled.addListener(() => { chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(() => {}); connectNative(); });
-chrome.runtime.onStartup.addListener(connectNative);
+chrome.runtime.onStartup.addListener(() => {
+  clearPinnedLlmTab()
+    .catch(() => {})
+    .finally(connectNative);
+});
 connectNative();
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
@@ -806,8 +927,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       const boundTabId = await getPinnedLlmTabId();
 
       if (
-        boundTabId != null &&
-        tabId != null &&
+        boundTabId == null ||
+        tabId == null ||
         tabId !== boundTabId
       ) {
         sendResponse({
@@ -820,9 +941,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
       clearResponseWatchdog();
 
-      if (tabId != null) {
-        await pinLlmTab(tabId);
-      }
       const downloads = tabId != null ? await getDownloadCandidates(tabId, message.payload?.responseKey) : { links: [] };
       sendNative({ type: "assistant_response", payload: { ...message.payload, tab_id: tabId, downloads: downloads?.links || [] } });
       sendResponse({ ok: true });
@@ -836,8 +954,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       const boundTabId = await getPinnedLlmTabId();
 
       if (
-        boundTabId != null &&
-        tabId != null &&
+        boundTabId == null ||
+        tabId == null ||
         tabId !== boundTabId
       ) {
         sendResponse({
@@ -869,7 +987,49 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     (async () => {
       if (command.action === "ping") sendNative({ type: "ping" });
       else if (command.action === "get_state") sendNative({ type: "get_state" });
-      else if (command.action === "diagnostics") {
+      else if (command.action === "recovery_prepare") {
+        if (!recoveryProviderId) {
+          throw new Error(
+            "Recovery context is not loaded yet. Refresh status and retry before re-binding a browser tab.",
+          );
+        }
+
+        const found = await inspectActiveLlmTab();
+
+        if (
+          found.provider.id !== recoveryProviderId
+        ) {
+          throw new Error(
+            `Recovery was interrupted on ${recoveryProviderId}, but the active tab is ${found.provider.id}. Activate the original provider or discard the interrupted run.`,
+          );
+        }
+
+        await pinLlmTab(found.tab.id);
+
+        sendNative({
+          type: "recovery_prepare",
+          tab_id: found.tab.id,
+          provider: found.provider.id,
+        });
+
+        return {
+          ok: true,
+          rebound: true,
+          tabId: found.tab.id,
+          provider: found.provider.id,
+        };
+      } else if (command.action === "recovery_discard") {
+        await clearPinnedLlmTab();
+
+        sendNative({
+          type: "recovery_discard",
+        });
+
+        return {
+          ok: true,
+          discarded: true,
+        };
+      } else if (command.action === "diagnostics") {
         return {
           ok: true,
           diagnostics: await runDiagnostics(),
@@ -889,12 +1049,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       else if (command.action === "reset_session") sendNative({ type: "reset_session" });
       else if (command.action === "approval") sendNative({ type: "approval_decision", approval_id: command.approval_id, decision: command.decision });
       else if (command.action === "send_text") {
-        const found = await findActiveLlmTab();
+        const found = await inspectActiveLlmTab();
 
-        const value = await sendTextToLlm(
+        const value = await sendTextToFoundLlm(
+          found,
           command.text || "",
           command.submit !== false,
-          found.tab.id,
         );
 
         return {
@@ -902,7 +1062,17 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           value,
         };
       }
-      return { ok: true, nativeConnected: nativeReady, provider: (await findLlmTab(lastLlmTabId))?.provider?.id || null };
+      let bound = null;
+
+      try {
+        bound = await findBoundLlmTab();
+      } catch {}
+
+      return {
+        ok: true,
+        nativeConnected: nativeReady,
+        provider: bound?.provider?.id || null,
+      };
     })().then(sendResponse).catch((error) => {
       broadcast({ kind: "error", text: String(error?.message || error) });
       sendResponse({ ok: false, error: String(error?.message || error) });

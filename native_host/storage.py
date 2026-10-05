@@ -35,6 +35,11 @@ class Store:
               status TEXT NOT NULL,
               payload TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS runtime_state (
+              key TEXT PRIMARY KEY,
+              updated_at TEXT NOT NULL,
+              payload TEXT NOT NULL
+            );
         """)
         self.db.commit()
 
@@ -50,4 +55,104 @@ class Store:
 
     def resolve_approval(self, approval_id: str, decision: str) -> None:
         with self.lock:
-            self.db.execute("UPDATE approvals SET status=? WHERE approval_id=?", (decision, approval_id)); self.db.commit()
+            self.db.execute(
+                "UPDATE approvals SET status=? WHERE approval_id=?",
+                (decision, approval_id),
+            )
+            self.db.commit()
+
+    def put_runtime_state(
+        self,
+        key: str,
+        payload: dict[str, Any],
+    ) -> None:
+        with self.lock:
+            self.db.execute(
+                """
+                INSERT INTO runtime_state(key, updated_at, payload)
+                VALUES (?, ?, ?)
+                ON CONFLICT(key) DO UPDATE SET
+                  updated_at=excluded.updated_at,
+                  payload=excluded.payload
+                """,
+                (
+                    str(key),
+                    now_iso(),
+                    json.dumps(payload, ensure_ascii=False),
+                ),
+            )
+            self.db.commit()
+
+    def get_runtime_state(
+        self,
+        key: str,
+    ) -> dict[str, Any] | None:
+        with self.lock:
+            row = self.db.execute(
+                "SELECT payload FROM runtime_state WHERE key=?",
+                (str(key),),
+            ).fetchone()
+
+        if row is None:
+            return None
+
+        try:
+            payload = json.loads(row["payload"])
+        except (TypeError, json.JSONDecodeError):
+            return None
+
+        return payload if isinstance(payload, dict) else None
+
+    def clear_runtime_state(
+        self,
+        key: str,
+    ) -> None:
+        with self.lock:
+            self.db.execute(
+                "DELETE FROM runtime_state WHERE key=?",
+                (str(key),),
+            )
+            self.db.commit()
+
+    def expire_pending_approvals(self) -> None:
+        with self.lock:
+            self.db.execute(
+                """
+                UPDATE approvals
+                SET status='expired'
+                WHERE status='pending'
+                """
+            )
+            self.db.commit()
+
+    def list_pending_approvals(self) -> list[dict[str, Any]]:
+        with self.lock:
+            rows = self.db.execute(
+                """
+                SELECT approval_id, created_at, payload
+                FROM approvals
+                WHERE status='pending'
+                ORDER BY created_at ASC
+                """
+            ).fetchall()
+
+        result: list[dict[str, Any]] = []
+
+        for row in rows:
+            try:
+                payload = json.loads(row["payload"])
+            except (TypeError, json.JSONDecodeError):
+                payload = {}
+
+            if not isinstance(payload, dict):
+                payload = {}
+
+            result.append(
+                {
+                    "approval_id": str(row["approval_id"]),
+                    "created_at": str(row["created_at"]),
+                    **payload,
+                }
+            )
+
+        return result

@@ -17,6 +17,12 @@ from runner import git_snapshot, run_command
 from safety import RunBudget
 from storage import Store
 from telegram import TelegramClient
+from recovery import (
+    RUNTIME_STATE_KEY,
+    build_runtime_snapshot,
+    recovery_summary,
+    requires_recovery,
+)
 
 class CoreMixin:
     def __init__(self, emit: Callable[[dict[str, Any]], None]) -> None:
@@ -37,13 +43,169 @@ class CoreMixin:
         self.budget = RunBudget()
         self.budget.reset(self.active_provider)
         self.pending_send_timer: threading.Timer | None = None
+        self.recovery_context: dict[str, Any] | None = None
+        self._restore_runtime_state()
+
+    def _runtime_snapshot(self) -> dict[str, Any]:
+        return build_runtime_snapshot(
+            lifecycle=self.lifecycle,
+            status=self.status,
+            current_step=self.current_step,
+            paused=self.paused,
+            active_provider=self.active_provider,
+            provider_guard=self.provider_guard,
+            pending=self.pending,
+        )
+
+    def _persist_runtime_state(self) -> None:
+        self.store.put_runtime_state(
+            RUNTIME_STATE_KEY,
+            self._runtime_snapshot(),
+        )
+
+    def _restore_runtime_state(self) -> None:
+        snapshot = self.store.get_runtime_state(
+            RUNTIME_STATE_KEY,
+        )
+
+        if not requires_recovery(snapshot):
+            return
+
+        assert snapshot is not None
+
+        self.recovery_context = recovery_summary(snapshot)
+        self.active_provider = str(
+            snapshot.get("active_provider")
+            or self.active_provider
+        )
+        self.provider_guard = bool(
+            snapshot.get("provider_guard")
+        )
+
+        self.paused = True
+        self.lifecycle = "recovery_required"
+        self.status = "recovery_required"
+        self.current_step = (
+            "Interrupted workflow requires recovery review"
+        )
+
+        self.budget.set_provider(self.active_provider)
+
+        if self.provider_guard:
+            self.budget.block(
+                "Recovered provider safety guard"
+            )
+
+    def resolve_recovery(
+        self,
+        decision: str,
+    ) -> bool:
+        with self.lock:
+            if self.lifecycle != "recovery_required":
+                return False
+
+            value = str(decision or "").strip().lower()
+
+            if value not in {"prepare", "discard"}:
+                raise ValueError(
+                    "Recovery decision must be prepare or discard"
+                )
+
+            previous = dict(
+                getattr(self, "recovery_context", None) or {}
+            )
+
+            self.store.expire_pending_approvals()
+            self.pending.clear()
+            self.no_contract_recoveries = 0
+            self.recovery_context = None
+
+            if value == "prepare":
+                if self.provider_guard:
+                    self.paused = True
+                    self.lifecycle = "paused"
+                    self.status = "provider_guard"
+                    self.current_step = (
+                        "Recovery acknowledged; provider safety "
+                        "guard remains active"
+                    )
+                else:
+                    self.paused = False
+                    self.lifecycle = "idle"
+                    self.status = "idle"
+                    self.current_step = (
+                        "Recovery reviewed; activate the intended "
+                        "LLM conversation and ARM & RUN"
+                    )
+            else:
+                self.paused = True
+                self.lifecycle = "paused"
+                self.status = (
+                    "provider_guard"
+                    if self.provider_guard
+                    else "paused"
+                )
+                self.current_step = (
+                    "Interrupted run discarded; project remains "
+                    "paused"
+                )
+
+            self.emit_event({
+                "kind": "recovery_resolved",
+                "badge": "RECOVERED",
+                "decision": value,
+                "previous_lifecycle": str(
+                    previous.get(
+                        "previous_lifecycle",
+                        "unknown",
+                    )
+                ),
+                "previous_status": str(
+                    previous.get(
+                        "previous_status",
+                        "unknown",
+                    )
+                ),
+                "text": (
+                    "Interrupted workflow reviewed. No interrupted "
+                    "command, approval, or prompt was replayed."
+                ),
+            })
+
+            self.emit({
+                "kind": "state",
+                "state": self.state(),
+            })
+
+            return True
 
     def emit_event(self, event: dict[str, Any]) -> None:
-        self.store.event(event.get("kind", "event"), event)
+        self.store.event(
+            event.get("kind", "event"),
+            event,
+        )
+        self._persist_runtime_state()
         self.emit(event)
 
     def state(self) -> dict[str, Any]:
-        return {"paused": self.paused, "status": self.status, "lifecycle": self.lifecycle, "current_step": self.current_step, "config": public_config(self.config), "budget": self.budget.public(self.config), "active_provider": self.active_provider, "active_provider_name": self.provider_name(self.active_provider), "pending_approvals": list(self.pending)}
+        return {
+            "paused": self.paused,
+            "status": self.status,
+            "lifecycle": self.lifecycle,
+            "current_step": self.current_step,
+            "config": public_config(self.config),
+            "budget": self.budget.public(self.config),
+            "active_provider": self.active_provider,
+            "active_provider_name": self.provider_name(
+                self.active_provider
+            ),
+            "pending_approvals": list(self.pending),
+            "recovery": getattr(
+                self,
+                "recovery_context",
+                None,
+            ),
+        }
 
     @staticmethod
     def provider_name(provider_id: str) -> str:

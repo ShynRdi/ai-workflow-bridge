@@ -160,8 +160,131 @@ async function runSystemDiagnostics() {
   }
 }
 
+function renderRecovery(state = {}) {
+  const recovery = state.recovery || null;
+  const required =
+    state.lifecycle === "recovery_required" &&
+    recovery?.required === true;
+
+  const panel = $("recoveryPanel");
+
+  if (!panel) return;
+
+  panel.classList.toggle("hidden", !required);
+
+  if (!required) return;
+
+  $("recoveryLifecycle").textContent =
+    String(recovery.previous_lifecycle || "unknown")
+      .replaceAll("_", " ")
+      .toUpperCase();
+
+  $("recoveryStatus").textContent =
+    String(recovery.previous_status || "unknown")
+      .replaceAll("_", " ")
+      .toUpperCase();
+
+  $("recoveryStep").textContent =
+    recovery.previous_step || "No previous step recorded.";
+
+  $("recoveryProvider").textContent =
+    String(recovery.active_provider || "unknown")
+      .toUpperCase();
+
+  const guard = $("recoveryGuard");
+
+  if (recovery.provider_guard) {
+    guard.textContent =
+      "Provider safety guard was active before interruption. " +
+      "Recovery will not clear that guard automatically.";
+    guard.classList.remove("hidden");
+  } else {
+    guard.textContent = "";
+    guard.classList.add("hidden");
+  }
+
+  const list = $("recoveryApprovals");
+  list.replaceChildren();
+
+  const approvals = Array.isArray(
+    recovery.pending_approvals,
+  )
+    ? recovery.pending_approvals
+    : [];
+
+  if (!approvals.length) {
+    const empty = document.createElement("div");
+    empty.className = "diagnostic-empty";
+    empty.textContent = "No pending approvals were recorded.";
+    list.append(empty);
+    return;
+  }
+
+  for (const approval of approvals) {
+    const row = document.createElement("div");
+    row.className = "recovery-approval";
+
+    const summary = document.createElement("b");
+    summary.textContent =
+      approval.summary || "Protected action";
+
+    const command = document.createElement("code");
+    command.textContent =
+      approval.command || "No command recorded";
+
+    const impact = document.createElement("small");
+    impact.textContent =
+      approval.impact || "No impact description recorded.";
+
+    row.append(summary, command, impact);
+    list.append(row);
+  }
+}
+
 function showApproval(event) { currentApprovalId = event.approval_id; $("approvalSummary").textContent = event.summary || "A protected action needs your approval."; $("approvalCommand").textContent = event.command || event.details || ""; $("approvalImpact").textContent = event.impact || "The workflow is paused until you decide."; $("approvalPanel").classList.remove("hidden"); }
-function setLifecycleButtons(state) { const lifecycle = state.lifecycle || state.status || "setup"; $("armWorkflow").disabled = !["ready_to_arm", "idle", "paused", "protocol_error"].includes(lifecycle) && lifecycle !== "setup"; $("finishProject").disabled = ["setup", "planning", "complete"].includes(lifecycle); }
+function setLifecycleButtons(state) {
+  const lifecycle =
+    state.lifecycle || state.status || "setup";
+
+  const recoveryRequired =
+    lifecycle === "recovery_required";
+
+  $("armWorkflow").disabled =
+    recoveryRequired ||
+    (
+      ![
+        "ready_to_arm",
+        "idle",
+        "paused",
+        "protocol_error",
+      ].includes(lifecycle) &&
+      lifecycle !== "setup"
+    );
+
+  $("finishProject").disabled =
+    recoveryRequired ||
+    ["setup", "planning", "complete"].includes(lifecycle);
+
+  for (const id of [
+    "saveConfig",
+    "planProject",
+    "pauseWorkflow",
+    "resumeWorkflow",
+    "changeCourse",
+    "resetSession",
+  ]) {
+    const node = $(id);
+    if (node) node.disabled = recoveryRequired;
+  }
+
+  if ($("prepareRecovery")) {
+    $("prepareRecovery").disabled = !recoveryRequired;
+  }
+
+  if ($("discardRecovery")) {
+    $("discardRecovery").disabled = !recoveryRequired;
+  }
+}
 function fillConfig(config) { if (config.project_name != null) $("projectName").value = config.project_name; if (config.project_goal != null) $("projectGoal").value = config.project_goal; if (config.workspace_root != null) $("workspaceRoot").value = config.workspace_root; if (config.provider_id && utils.getProvider(config.provider_id)) $("providerId").value = config.provider_id; if (config.model_label != null) $("modelLabel").value = config.model_label; $("providerAuto").checked = config.provider_mode === "auto"; $("autoRunLowRisk").checked = config.auto_run_low_risk !== false; if (config.min_turn_interval_seconds != null) $("minTurnInterval").value = config.min_turn_interval_seconds; if (config.max_turns_per_hour != null) $("maxTurnsHour").value = config.max_turns_per_hour; if (config.max_turns_per_session != null) $("maxTurnsSession").value = config.max_turns_per_session; if (config.max_runtime_minutes != null) $("maxRuntimeMinutes").value = config.max_runtime_minutes; if (config.bot_configured && !$("botToken").value) $("botToken").placeholder = "Configured locally — enter only to replace"; if (config.chat_id != null) $("chatId").value = config.chat_id; updateProviderCard(); }
 function fillBudget(budget = {}, config = {}) { $("budgetTurns").textContent = `${budget.session_turns || 0} / ${config.max_turns_per_session || 25}`; $("budgetHour").textContent = `${budget.turns_last_hour || 0} / ${config.max_turns_per_hour || 20}`; $("budgetRuntime").textContent = `${Math.round(budget.runtime_minutes || 0)} / ${config.max_runtime_minutes || 90}m`; $("budgetCooldown").textContent = budget.cooldown_until ? "PAUSED" : "READY"; }
 function handleEvent(event) { if (!event) return; if (event.kind === "host_status") {
@@ -173,10 +296,46 @@ function handleEvent(event) { if (!event) return; if (event.kind === "host_statu
       $("hostStatusDetail").textContent = event.text || "Native Messaging";
       addLog(event.connected ? "KAPOW" : "UH-OH", event.text || "Host status changed");
     }
-  } else if (event.kind === "state") { const state = event.state || {}; lastState = state; const lifecycle = state.lifecycle || state.status || "setup"; $("runStatus").textContent = String(lifecycle).replaceAll("_", " ").toUpperCase(); $("runStatusDetail").textContent = state.current_step || "No active workflow"; fillConfig(state.config || {}); fillBudget(state.budget || {}, state.config || {}); setLifecycleButtons(state); if (state.active_provider_name) { $("activeProvider").textContent = state.active_provider_name.toUpperCase().slice(0,13); $("providerDetail").textContent = "active browser adapter"; } } else if (event.kind === "approval_required") { showApproval(event); addLog("WAIT!", event.summary || "Approval required"); } else if (event.kind === "approval_resolved") { $("approvalPanel").classList.add("hidden"); currentApprovalId = null; addLog("DECIDED", `${event.decision || "decision"}: ${event.summary || "approval resolved"}`); } else if (event.kind === "step") { $("runStatus").textContent = (event.status || "RUNNING").replaceAll("_", " ").toUpperCase(); $("runStatusDetail").textContent = event.title || event.text || "Workflow step"; addLog(event.badge || "BAM", event.text || event.title || "Step update"); } else if (event.kind === "error") { $("runStatus").textContent = "PAUSED"; $("runStatusDetail").textContent = event.text || "Workflow error"; addLog("CRASH", event.text || "Unknown error"); } else if (event.kind === "info") addLog(event.badge || "INFO", event.text || "Update"); }
+  } else if (event.kind === "state") { const state = event.state || {}; lastState = state; const lifecycle = state.lifecycle || state.status || "setup"; $("runStatus").textContent = String(lifecycle).replaceAll("_", " ").toUpperCase(); $("runStatusDetail").textContent = state.current_step || "No active workflow"; fillConfig(state.config || {}); fillBudget(state.budget || {}, state.config || {}); renderRecovery(state); setLifecycleButtons(state); if (state.active_provider_name) { $("activeProvider").textContent = state.active_provider_name.toUpperCase().slice(0,13); $("providerDetail").textContent = "active browser adapter"; } } else if (event.kind === "recovery_resolved") {
+    $("recoveryPanel")?.classList.add("hidden");
+    addLog(
+      "RECOVERED",
+      event.text || "Interrupted workflow reviewed.",
+    );
+  } else if (event.kind === "approval_required") { showApproval(event); addLog("WAIT!", event.summary || "Approval required"); } else if (event.kind === "approval_resolved") { $("approvalPanel").classList.add("hidden"); currentApprovalId = null; addLog("DECIDED", `${event.decision || "decision"}: ${event.summary || "approval resolved"}`); } else if (event.kind === "step") { $("runStatus").textContent = (event.status || "RUNNING").replaceAll("_", " ").toUpperCase(); $("runStatusDetail").textContent = event.title || event.text || "Workflow step"; addLog(event.badge || "BAM", event.text || event.title || "Step update"); } else if (event.kind === "error") { $("runStatus").textContent = "PAUSED"; $("runStatusDetail").textContent = event.text || "Workflow error"; addLog("CRASH", event.text || "Unknown error"); } else if (event.kind === "info") addLog(event.badge || "INFO", event.text || "Update"); }
 chrome.runtime.onMessage.addListener((message) => { if (message?.type === "BRIDGE_EVENT") handleEvent(message.payload); });
 populateProviders(); $("providerId").value = "chatgpt"; updateProviderCard(); $("providerId").addEventListener("change", updateProviderCard); $("providerAuto").addEventListener("change", updateProviderCard); $("modelLabel").addEventListener("input", updateProviderCard); $("grantProvider").addEventListener("click", () => grantProviderAccess().catch((e) => addLog("NOPE", e.message))); $("saveConfig").addEventListener("click", () => saveProject().then(() => setTimeout(() => command("get_state"), 200)).catch((e) => addLog("CRASH", e.message)));
 $("runDiagnostics").addEventListener("click", () => runSystemDiagnostics());
+
+$("prepareRecovery").addEventListener("click", async () => {
+  try {
+    await command("recovery_prepare");
+    addLog(
+      "RECOVER",
+      "Recovery reviewed and rebound to the active LLM tab. You may now use ARM & RUN.",
+    );
+  } catch (error) {
+    addLog(
+      "CRASH",
+      String(error?.message || error),
+    );
+  }
+});
+
+$("discardRecovery").addEventListener("click", async () => {
+  try {
+    await command("recovery_discard");
+    addLog(
+      "STOP",
+      "Interrupted run discarded. No interrupted action was replayed.",
+    );
+  } catch (error) {
+    addLog(
+      "CRASH",
+      String(error?.message || error),
+    );
+  }
+});
 $("planProject").addEventListener("click", async () => { try { if (!$("projectGoal").value.trim()) throw new Error("Add a project goal/master brief before planning."); const p = await grantProviderAccess({ quiet: true }); await saveProject({ log: false }); await command("plan_project"); addLog("PLAN!", `Sent the protected project-start prompt to ${p.name}.`); } catch (e) { addLog("CRASH", e.message); } });
 $("armWorkflow").addEventListener("click", async () => { try { const p = await grantProviderAccess({ quiet: true }); await saveProject({ log: false }); await command("arm"); addLog("ZAP!", `Arming the current ${p.name} thread.`); } catch (e) { addLog("CRASH", e.message); } });
 $("pauseWorkflow").addEventListener("click", () => command("pause")); $("resumeWorkflow").addEventListener("click", () => command("resume")); $("refreshState").addEventListener("click", () => command("get_state")); $("resetSession").addEventListener("click", () => command("reset_session"));

@@ -43,3 +43,39 @@ def test_diagnostics_ui_does_not_request_permissions_or_send_prompts():
     assert "chrome.permissions.request" not in block
     assert "SEND_TO_LLM" not in block
     assert "send_text" not in block
+
+
+
+def test_recovery_panel_exposes_explicit_human_decisions():
+    html = (EXT / "sidepanel.html").read_text(encoding="utf-8")
+    panel = (EXT / "sidepanel.js").read_text(encoding="utf-8")
+
+    assert 'id="recoveryPanel"' in html
+    assert 'id="recoveryLifecycle"' in html
+    assert 'id="recoveryStatus"' in html
+    assert 'id="recoveryStep"' in html
+    assert 'id="recoveryApprovals"' in html
+    assert 'id="prepareRecovery"' in html
+    assert 'id="discardRecovery"' in html
+
+    assert 'command("recovery_prepare")' in panel
+    assert 'command("recovery_discard")' in panel
+    assert "renderRecovery(state)" in panel
+
+
+def test_recovery_ui_does_not_send_llm_prompt_directly():
+    panel = (EXT / "sidepanel.js").read_text(encoding="utf-8")
+
+    start = panel.index(
+        '$("prepareRecovery").addEventListener'
+    )
+    end = panel.index(
+        '$("planProject").addEventListener',
+        start,
+    )
+
+    block = panel[start:end]
+
+    assert "send_text" not in block
+    assert "SEND_TO_LLM" not in block
+    assert 'command("arm")' not in block
