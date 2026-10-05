@@ -10,9 +10,12 @@ This roadmap is directional and does not promise dates.
 
 ## 0.3.3 — Crash and restart recovery
 
-- Restore in-progress workflow state after Chrome/service-worker/native-host restart.
-- Preserve pending approvals and bound workflow context safely.
-- Explicit recovery state instead of silently resuming execution.
+- Persist active runtime, provider-safety, and autonomy-budget state across native-host restarts.
+- Enter explicit fail-closed recovery after interrupted workflows instead of silently resuming execution.
+- Preserve pending-approval review context without restoring executable continuations.
+- Require explicit provider/tab rebinding before re-arming a recovered workflow.
+- Bind workflows to provider, tab, and conversation identity and fail closed on same-tab conversation changes.
+- Checkpoint runtime state before commands, browser downloads, and outbound LLM sends.
 
 ## 0.3.4 — Checkpoint and rollback
 

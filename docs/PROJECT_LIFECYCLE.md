@@ -32,6 +32,16 @@ CHANGE_REVIEW        WAITING_APPROVAL
               COMPLETE
 ```
 
+## Crash/restart recovery
+
+Active in-flight lifecycle states are persisted by the native host. If the host restarts while a workflow is active, startup enters `RECOVERY_REQUIRED`.
+
+Recovery is fail closed. The interrupted execution cursor, command continuation, approval continuation, download waiter, and prompt timer are not restored.
+
+The human must explicitly prepare or discard recovery. Preparing recovery validates the original provider and explicitly rebinds the intended active conversation. It does not automatically send a prompt or resume an interrupted command.
+
+Passive safety states such as manual pause, provider guard, and exhausted autonomy budget survive restart without becoming executable work.
+
 ## Planning protocol
 
 Planning is non-executable. The LLM returns a canonical roadmap block and `READY_TO_ARM`.

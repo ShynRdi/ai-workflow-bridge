@@ -1,4 +1,4 @@
-# AI Workflow Bridge 0.3.2 — Complete User Guide
+# AI Workflow Bridge 0.3.3 — Complete User Guide
 
 AI Workflow Bridge connects a web LLM conversation to a guarded local runner. The LLM plans and emits a machine-readable workflow contract; the native host executes only approved/local-safe commands, returns stdout/stderr to the same conversation, and stops whenever a human decision or provider safety condition appears.
 
@@ -96,7 +96,7 @@ The Bridge never signs in for you and never asks for your password or cookies.
 
 # 2. Site permissions
 
-Version 0.3.2 does **not** request access to every LLM website at install time.
+Version 0.3.3 does **not** request access to every LLM website at install time.
 
 Choose your Web LLM in **AI Engine + Safety**, then click:
 
@@ -162,6 +162,25 @@ remaining stages
 If an approved Course Change replaces the roadmap, progress is recalculated from the updated canonical roadmap while preserving completed stages that remain valid in the replacement roadmap.
 
 ---
+
+# 2.3 Crash and restart recovery
+
+If Chrome, the extension service worker, or the native host is interrupted while a workflow is active, the Bridge does not silently continue from the previous execution position.
+
+An interrupted active workflow returns in `RECOVERY_REQUIRED`.
+
+Mission Control shows the previous lifecycle/status, provider, and non-executable pending-approval review context.
+
+The available recovery actions are:
+
+- **REVIEWED — PREPARE TO RE-ARM**: activate the intended provider conversation first. The Bridge validates and explicitly rebinds that provider/tab. Preparation does not send a prompt or replay an interrupted action; use **ARM & RUN** separately.
+- **DISCARD INTERRUPTED RUN**: expire stale pending approvals and keep the project paused.
+
+The Bridge deliberately does not restore or automatically replay the command execution cursor, approved command index, approval continuation, download waiter, delayed prompt timer, or outbound LLM prompt.
+
+Provider safety guards and autonomy-budget counters survive native-host restart.
+
+Workflow browser binding also includes conversation identity. Navigating the bound tab to another conversation causes subsequent workflow activity to fail closed and requires explicit rebinding.
 
 # 3. The project lifecycle
 
@@ -772,7 +791,7 @@ Re-run the current native-host installer with the extension ID:
 ./install_native_host.sh YOUR_EXTENSION_ID
 ```
 
-Version 0.3.2 installs the host into macOS Application Support and pins a suitable Python interpreter. Reload the extension after reinstalling the host.
+The current installer places the host into macOS Application Support and pins a suitable Python interpreter. Reload the extension after reinstalling the host.
 
 ## Project-local roadmap state
 
