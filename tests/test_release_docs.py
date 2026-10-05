@@ -4,14 +4,16 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_public_docs_are_aligned_with_032():
+def test_public_docs_are_aligned_with_033():
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
     guide = (ROOT / "docs" / "USER_GUIDE.md").read_text(encoding="utf-8")
     changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
 
-    assert "Public Preview 0.3.2" in readme
-    assert "AI Workflow Bridge 0.3.2" in guide
-    assert "## [0.3.2] - 2026-09-23" in changelog
+    assert "Public Preview 0.3.3" in readme
+    assert "AI Workflow Bridge 0.3.3" in guide
+    assert "## [0.3.3] - 2026-10-05" in changelog
+    assert "RECOVERY_REQUIRED" in readme
+    assert "Crash-safe recovery and conversation identity" in changelog
 
 
 def test_docs_cover_diagnostics_progress_and_active_tab_binding():
