@@ -436,3 +436,131 @@ def test_archive_tampering_is_detected(
         )
         is False
     )
+
+
+def test_snapshot_cleanup_removes_only_checkpoint_directory(
+    tmp_path: Path,
+):
+    from checkpoint_snapshot import (
+        remove_workspace_snapshot,
+    )
+
+    workspace = (
+        tmp_path /
+        "workspace"
+    )
+
+    storage = (
+        tmp_path /
+        "storage"
+    )
+
+    workspace.mkdir()
+
+    (workspace / "file.txt").write_text(
+        "before",
+        encoding="utf-8",
+    )
+
+    metadata = create_workspace_snapshot(
+        checkpoint_id="cp-cleanup",
+        workspace_root=str(
+            workspace
+        ),
+        storage_root=storage,
+    )
+
+    checkpoint_dir = Path(
+        metadata[
+            "archive_path"
+        ]
+    ).parent
+
+    other = (
+        storage /
+        "other"
+    )
+
+    other.mkdir()
+
+    assert checkpoint_dir.is_dir()
+
+    assert remove_workspace_snapshot(
+        checkpoint_id="cp-cleanup",
+        storage_root=storage,
+    )
+
+    assert not checkpoint_dir.exists()
+    assert other.is_dir()
+
+    assert (
+        remove_workspace_snapshot(
+            checkpoint_id="cp-cleanup",
+            storage_root=storage,
+        )
+        is False
+    )
+
+
+def test_snapshot_cleanup_removes_only_checkpoint_directory(
+    tmp_path: Path,
+):
+    from checkpoint_snapshot import (
+        remove_workspace_snapshot,
+    )
+
+    workspace = (
+        tmp_path /
+        "workspace"
+    )
+
+    storage = (
+        tmp_path /
+        "storage"
+    )
+
+    workspace.mkdir()
+
+    (workspace / "file.txt").write_text(
+        "before",
+        encoding="utf-8",
+    )
+
+    metadata = create_workspace_snapshot(
+        checkpoint_id="cp-cleanup",
+        workspace_root=str(
+            workspace
+        ),
+        storage_root=storage,
+    )
+
+    checkpoint_dir = Path(
+        metadata[
+            "archive_path"
+        ]
+    ).parent
+
+    other = (
+        storage /
+        "other"
+    )
+
+    other.mkdir()
+
+    assert checkpoint_dir.is_dir()
+
+    assert remove_workspace_snapshot(
+        checkpoint_id="cp-cleanup",
+        storage_root=storage,
+    )
+
+    assert not checkpoint_dir.exists()
+    assert other.is_dir()
+
+    assert (
+        remove_workspace_snapshot(
+            checkpoint_id="cp-cleanup",
+            storage_root=storage,
+        )
+        is False
+    )

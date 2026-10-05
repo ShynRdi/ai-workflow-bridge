@@ -465,6 +465,44 @@ def create_workspace_snapshot(
         raise
 
 
+def remove_workspace_snapshot(
+    *,
+    checkpoint_id: str,
+    storage_root: str | Path | None = None,
+) -> bool:
+    checkpoint_id = _safe_checkpoint_id(
+        checkpoint_id
+    )
+
+    storage = _snapshot_storage_root(
+        storage_root
+    )
+
+    target = (
+        storage /
+        checkpoint_id
+    )
+
+    if target.is_symlink():
+        target.unlink()
+        return True
+
+    if not target.exists():
+        return False
+
+    if not target.is_dir():
+        raise ValueError(
+            "Checkpoint snapshot path is not "
+            "a directory"
+        )
+
+    shutil.rmtree(
+        target
+    )
+
+    return True
+
+
 def verify_workspace_snapshot(
     metadata: dict[str, Any],
 ) -> bool:

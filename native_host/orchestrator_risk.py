@@ -3,12 +3,184 @@ from __future__ import annotations
 from dataclasses import asdict
 from typing import Any
 
+from checkpoint import build_checkpoint_metadata
+from checkpoint_snapshot import (
+    create_workspace_snapshot,
+    remove_workspace_snapshot,
+)
 from policy import classify, merge_risk
 from redaction import redact_text
 from runner import git_snapshot, run_command
 
 
 class RiskAwareExecutionMixin:
+    @staticmethod
+    def _risk_requires_checkpoint(
+        risk_level: str,
+    ) -> bool:
+        return (
+            str(risk_level or "")
+            .strip()
+            .upper()
+            in {"R2", "R3"}
+        )
+
+    def _create_command_checkpoint(
+        self,
+        *,
+        contract,
+        spec,
+        index: int,
+        workspace: str,
+        risk,
+    ) -> dict[str, Any]:
+        git_state = git_snapshot(
+            workspace
+        )
+
+        summary = str(
+            spec.purpose
+            or contract.summary
+            or "Protected workspace mutation"
+        ).strip()
+
+        reason = (
+            f"Effective risk {risk.risk_level} "
+            "requires a workspace-file checkpoint "
+            "before command execution."
+        )
+
+        provisional = build_checkpoint_metadata(
+            workspace_root=workspace,
+            lifecycle=str(
+                getattr(
+                    self,
+                    "lifecycle",
+                    "",
+                )
+            ),
+            phase=str(
+                self.config.get(
+                    "phase"
+                )
+                or ""
+            ),
+            stage=str(
+                self.config.get(
+                    "stage"
+                )
+                or ""
+            ),
+            command_index=index,
+            command_summary=summary,
+            risk_level=str(
+                risk.risk_level
+            ),
+            reason=reason,
+            git=git_state,
+            snapshot_metadata={
+                "kind": "pending",
+                "rollback_scope": (
+                    "workspace_files_only"
+                ),
+            },
+        )
+
+        checkpoint_id = str(
+            provisional[
+                "checkpoint_id"
+            ]
+        )
+
+        snapshot = None
+
+        try:
+            snapshot = create_workspace_snapshot(
+                checkpoint_id=checkpoint_id,
+                workspace_root=workspace,
+            )
+
+            snapshot = {
+                **snapshot,
+                "rollback_scope": (
+                    "workspace_files_only"
+                ),
+                "rollback_limitations": [
+                    (
+                        "Git metadata under .git "
+                        "is not captured."
+                    ),
+                    (
+                        "Native-owned .ai-workflow "
+                        "state is not captured."
+                    ),
+                    (
+                        "Remote, database, system, "
+                        "and other external side effects "
+                        "are outside this checkpoint."
+                    ),
+                    (
+                        "Excluded volatile directories "
+                        "are outside this checkpoint."
+                    ),
+                ],
+            }
+
+            checkpoint = (
+                build_checkpoint_metadata(
+                    workspace_root=workspace,
+                    lifecycle=str(
+                        getattr(
+                            self,
+                            "lifecycle",
+                            "",
+                        )
+                    ),
+                    phase=str(
+                        self.config.get(
+                            "phase"
+                        )
+                        or ""
+                    ),
+                    stage=str(
+                        self.config.get(
+                            "stage"
+                        )
+                        or ""
+                    ),
+                    command_index=index,
+                    command_summary=summary,
+                    risk_level=str(
+                        risk.risk_level
+                    ),
+                    reason=reason,
+                    git=git_state,
+                    snapshot_metadata=snapshot,
+                    checkpoint_id=checkpoint_id,
+                    created_at=str(
+                        provisional[
+                            "created_at"
+                        ]
+                    ),
+                )
+            )
+
+            self.store.put_checkpoint(
+                checkpoint
+            )
+
+            return checkpoint
+
+        except Exception:
+            try:
+                remove_workspace_snapshot(
+                    checkpoint_id=checkpoint_id
+                )
+            except Exception:
+                pass
+
+            raise
+
     def _run_command_and_continue(
         self,
         contract,
@@ -63,11 +235,133 @@ class RiskAwareExecutionMixin:
                 )
                 return
 
-            self.status = "running"
-            self.current_step = spec.purpose or display_command
-            self.emit_event({"kind": "step", "badge": "BAM!", "status": "running", "text": self.current_step})
+            checkpoint = None
 
-            # Explicit crash boundary: the persisted state must
+            if self._risk_requires_checkpoint(
+                risk.risk_level
+            ):
+                self.status = "checkpointing"
+                self.current_step = (
+                    spec.purpose
+                    or display_command
+                )
+
+                self.emit_event({
+                    "kind": "step",
+                    "badge": "SAVE",
+                    "status": "checkpointing",
+                    "text": (
+                        "Creating a workspace-file "
+                        "checkpoint before protected "
+                        f"{risk.risk_level} execution."
+                    ),
+                })
+
+                try:
+                    checkpoint = (
+                        self._create_command_checkpoint(
+                            contract=contract,
+                            spec=spec,
+                            index=index,
+                            workspace=workspace,
+                            risk=risk,
+                        )
+                    )
+                except Exception as error:
+                    self.status = "failed"
+                    self.current_step = (
+                        "Checkpoint creation failed"
+                    )
+
+                    detail = redact_text(
+                        str(error)
+                    )
+
+                    self.emit_event({
+                        "kind": "error",
+                        "badge": "SAVE!",
+                        "status": "failed",
+                        "text": (
+                            "Checkpoint creation failed; "
+                            "the protected command was "
+                            f"NOT executed: {detail}"
+                        ),
+                    })
+
+                    self._send_result_to_chatgpt(
+                        "Bridge could not create the "
+                        "required pre-mutation workspace "
+                        "checkpoint. The command was NOT "
+                        f"executed. Error: {detail}"
+                    )
+
+                    return
+
+                snapshot = dict(
+                    checkpoint.get(
+                        "snapshot"
+                    )
+                    or {}
+                )
+
+                self.emit_event({
+                    "kind": "checkpoint",
+                    "badge": "SAVE",
+                    "status": "checkpoint_ready",
+                    "checkpoint_id": str(
+                        checkpoint.get(
+                            "checkpoint_id"
+                        )
+                        or ""
+                    ),
+                    "risk_level": str(
+                        risk.risk_level
+                    ),
+                    "rollback_scope": str(
+                        snapshot.get(
+                            "rollback_scope"
+                        )
+                        or "workspace_files_only"
+                    ),
+                    "file_count": int(
+                        snapshot.get(
+                            "file_count"
+                        )
+                        or 0
+                    ),
+                    "total_bytes": int(
+                        snapshot.get(
+                            "total_bytes"
+                        )
+                        or 0
+                    ),
+                    "text": (
+                        "Workspace-file checkpoint "
+                        "created. External, database, "
+                        "system, Git-metadata, and "
+                        "native lifecycle side effects "
+                        "are not represented as fully "
+                        "transactional."
+                    ),
+                })
+
+            self.status = "running"
+            self.current_step = (
+                spec.purpose
+                or display_command
+            )
+
+            self.emit_event({
+                "kind": "step",
+                "badge": "BAM!",
+                "status": "running",
+                "text": self.current_step,
+            })
+
+            # Explicit crash boundary: checkpoint creation
+            # and checkpoint metadata persistence, when
+            # required, must already be complete before the
+            # local process receives any opportunity to mutate.
             # already describe an in-flight command before the
             # local process receives any opportunity to mutate.
             self._persist_runtime_state()
