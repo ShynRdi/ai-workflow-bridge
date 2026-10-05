@@ -66,6 +66,12 @@ class RiskAwareExecutionMixin:
             self.status = "running"
             self.current_step = spec.purpose or display_command
             self.emit_event({"kind": "step", "badge": "BAM!", "status": "running", "text": self.current_step})
+
+            # Explicit crash boundary: the persisted state must
+            # already describe an in-flight command before the
+            # local process receives any opportunity to mutate.
+            self._persist_runtime_state()
+
             try:
                 result = run_command(
                     spec.cmd,

@@ -44,7 +44,7 @@ class ReportingMixin:
                 if self.paused or self.provider_guard: return
                 second=self.budget.decision(self.config)
                 if not second.get("allowed"): self.paused=True; self.lifecycle="budget_exhausted"; self.status="budget_exhausted"; self.current_step=str(second.get("reason") or "AI-turn budget exhausted"); self.emit_event({"kind":"step","badge":"BRAKE!","status":"budget_exhausted","text":self.current_step}); return
-                self.budget.record_send(); self.emit({"kind":"send_to_llm","request_id":str(uuid.uuid4()),"text":text}); self.emit({"kind":"state","state":self.state()})
+                self.budget.record_send(); self._persist_runtime_state(); self.emit({"kind":"send_to_llm","request_id":str(uuid.uuid4()),"text":text}); self.emit({"kind":"state","state":self.state()})
         delay=float(decision.get("delay") or 0.0)
         if delay>0.05:
             if self.pending_send_timer is not None: self.pending_send_timer.cancel()

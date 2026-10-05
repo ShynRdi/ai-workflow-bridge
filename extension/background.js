@@ -1,23 +1,33 @@
-importScripts("providers.js");
+importScripts(
+  "providers.js",
+  "conversation-identity.js",
+);
 
 const NATIVE_HOST = "io.github.shynrdi.ai_workflow_bridge";
-const PINNED_TAB_STORAGE_KEY = "pinnedLlmTabId";
+const LEGACY_PINNED_TAB_STORAGE_KEY = "pinnedLlmTabId";
+const CONVERSATION_BINDING_STORAGE_KEY =
+  "llmConversationBinding";
 let nativePort = null;
 let nativeReady = false;
 let reconnectTimer = null;
 let nativeHandshakeTimer = null;
 let nativeDisconnectReason = "";
 let reconnectAttempt = 0;
-let lastLlmTabId = null;
+let lastLlmBinding = null;
+let provisionalSealAuthorization = null;
+let recoveryProviderId = null;
 let responseWatchdog = null;
 
 const NATIVE_HANDSHAKE_TIMEOUT_MS = 8000;
 const NATIVE_RECONNECT_DELAYS_MS = [2500, 5000, 10000, 20000, 30000];
 const DIAGNOSTICS_TIMEOUT_MS = 6000;
+const PROVISIONAL_SEAL_AUTH_TTL_MS = 10000;
 const pendingDiagnostics = new Map();
 
 const providers = globalThis.AWB_PROVIDERS || [];
 const utils = globalThis.AWB_PROVIDER_UTILS;
+const conversationUtils =
+  globalThis.AWB_CONVERSATION_IDENTITY;
 
 function broadcast(message) {
   chrome.runtime.sendMessage({ type: "BRIDGE_EVENT", payload: message }).catch(() => {});
@@ -168,23 +178,164 @@ async function selectedProviderConfig() {
   return { mode: stored.providerMode || "manual", id: stored.providerId || "chatgpt" };
 }
 
-async function pinLlmTab(tabId) {
-  if (tabId == null) return;
-  lastLlmTabId = tabId;
-  try { await chrome.storage.session.set({ [PINNED_TAB_STORAGE_KEY]: tabId }); } catch {}
+function validConversationBinding(value) {
+  return Boolean(
+    value &&
+    value.version === 1 &&
+    Number.isInteger(value.tabId) &&
+    value.tabId > 0 &&
+    typeof value.provider === "string" &&
+    value.provider &&
+    typeof value.pathname === "string" &&
+    value.pathname.startsWith("/") &&
+    typeof value.key === "string" &&
+    value.key &&
+    typeof value.provisional === "boolean"
+  );
 }
 
-async function getPinnedLlmTabId() {
-  if (lastLlmTabId != null) return lastLlmTabId;
+function buildConversationBinding(found) {
+  if (
+    !found?.tab?.id ||
+    !found?.provider?.id
+  ) {
+    throw new Error(
+      "Cannot bind an incomplete LLM tab identity.",
+    );
+  }
+
+  const identity =
+    conversationUtils.conversationIdentity(
+      found.provider.id,
+      found.tab.url || "",
+    );
+
+  return {
+    version: 1,
+    tabId: found.tab.id,
+    provider: found.provider.id,
+    pathname: identity.pathname,
+    key: identity.key,
+    provisional: identity.provisional,
+  };
+}
+
+async function persistLlmBinding(binding) {
+  if (!validConversationBinding(binding)) {
+    throw new Error(
+      "Refusing to persist an invalid conversation binding.",
+    );
+  }
+
+  lastLlmBinding = binding;
+
+  await chrome.storage.session.set({
+    [CONVERSATION_BINDING_STORAGE_KEY]: binding,
+  });
+
+  // Numeric-only bindings from <=0.3.2 cannot prove
+  // conversation identity and are intentionally discarded.
+  await chrome.storage.session.remove(
+    LEGACY_PINNED_TAB_STORAGE_KEY,
+  );
+
+  return binding;
+}
+
+async function pinLlmBinding(found) {
+  return persistLlmBinding(
+    buildConversationBinding(found),
+  );
+}
+
+async function getLlmBinding() {
+  if (validConversationBinding(lastLlmBinding)) {
+    return lastLlmBinding;
+  }
+
   try {
-    const stored = await chrome.storage.session.get(PINNED_TAB_STORAGE_KEY);
-    const value = stored?.[PINNED_TAB_STORAGE_KEY];
-    if (Number.isInteger(value)) { lastLlmTabId = value; return value; }
+    const stored = await chrome.storage.session.get([
+      CONVERSATION_BINDING_STORAGE_KEY,
+      LEGACY_PINNED_TAB_STORAGE_KEY,
+    ]);
+
+    const binding =
+      stored?.[CONVERSATION_BINDING_STORAGE_KEY];
+
+    if (validConversationBinding(binding)) {
+      lastLlmBinding = binding;
+      return binding;
+    }
+
+    // Fail closed. Never turn a legacy numeric tab id into
+    // a trusted conversation binding.
+    const staleKeys = [];
+
+    if (binding != null) {
+      staleKeys.push(
+        CONVERSATION_BINDING_STORAGE_KEY,
+      );
+    }
+
+    if (
+      stored?.[LEGACY_PINNED_TAB_STORAGE_KEY] != null
+    ) {
+      staleKeys.push(
+        LEGACY_PINNED_TAB_STORAGE_KEY,
+      );
+    }
+
+    if (staleKeys.length) {
+      await chrome.storage.session.remove(staleKeys);
+    }
   } catch {}
+
+  lastLlmBinding = null;
   return null;
 }
 
-async function findActiveLlmTab() {
+async function getPinnedLlmTabId() {
+  const binding = await getLlmBinding();
+  return binding?.tabId ?? null;
+}
+
+async function peekLlmBinding() {
+  if (validConversationBinding(lastLlmBinding)) {
+    return lastLlmBinding;
+  }
+
+  try {
+    const stored =
+      await chrome.storage.session.get(
+        CONVERSATION_BINDING_STORAGE_KEY,
+      );
+
+    const binding =
+      stored?.[
+        CONVERSATION_BINDING_STORAGE_KEY
+      ];
+
+    return validConversationBinding(binding)
+      ? binding
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+async function clearPinnedLlmTab() {
+  lastLlmBinding = null;
+  provisionalSealAuthorization = null;
+
+  try {
+    await chrome.storage.session.remove([
+      CONVERSATION_BINDING_STORAGE_KEY,
+      LEGACY_PINNED_TAB_STORAGE_KEY,
+    ]);
+  } catch {}
+}
+
+async function inspectActiveLlmTab() {
   const selection = await selectedProviderConfig();
   const wanted =
     selection.mode === "auto"
@@ -218,40 +369,258 @@ async function findActiveLlmTab() {
     );
   }
 
-  await pinLlmTab(tab.id);
+  return { tab, provider };
+}
+
+async function findActiveLlmTab() {
+  const found = await inspectActiveLlmTab();
+
+  await pinLlmBinding(found);
+
+  return found;
+}
+
+function clearProvisionalSealAuthorization() {
+  provisionalSealAuthorization = null;
+}
+
+function activeProvisionalSealAuthorization() {
+  const value =
+    provisionalSealAuthorization;
+
+  if (!value) {
+    return null;
+  }
+
+  if (
+    !Number.isFinite(value.expiresAt) ||
+    Date.now() > value.expiresAt
+  ) {
+    clearProvisionalSealAuthorization();
+    return null;
+  }
+
+  return value;
+}
+
+async function trySealAuthorizedProvisionalBinding(
+  tabId,
+  tabUrl = "",
+) {
+  const authorization =
+    activeProvisionalSealAuthorization();
+
+  if (
+    !authorization ||
+    authorization.tabId !== tabId
+  ) {
+    return false;
+  }
+
+  const binding =
+    await getLlmBinding();
+
+  if (
+    !binding ||
+    !binding.provisional ||
+    binding.tabId !== authorization.tabId ||
+    binding.provider !== authorization.provider ||
+    binding.key !== authorization.bindingKey
+  ) {
+    clearProvisionalSealAuthorization();
+    return false;
+  }
+
+  let url = String(
+    tabUrl || "",
+  );
+
+  if (!url) {
+    try {
+      const tab =
+        await chrome.tabs.get(tabId);
+
+      url = String(
+        tab?.url || "",
+      );
+    } catch {
+      return false;
+    }
+  }
+
+  const provider =
+    providerForUrl(url);
+
+  if (
+    !provider ||
+    provider.id !== binding.provider
+  ) {
+    await clearPinnedLlmTab();
+    return false;
+  }
+
+  const identity =
+    conversationUtils.conversationIdentity(
+      provider.id,
+      url,
+    );
+
+  if (identity.provisional) {
+    return false;
+  }
+
+  if (!identity.autoSealable) {
+    return false;
+  }
+
+  const sealed = {
+    version: 1,
+    tabId: binding.tabId,
+    provider: binding.provider,
+    pathname: identity.pathname,
+    key: identity.key,
+    provisional: false,
+  };
+
+  await persistLlmBinding(
+    sealed,
+  );
+
+  clearProvisionalSealAuthorization();
+
+  return true;
+}
+
+async function authorizeProvisionalSealAfterSubmit(
+  found,
+) {
+  const binding =
+    await getLlmBinding();
+
+  if (!binding?.provisional) {
+    return binding;
+  }
+
+  if (
+    binding.tabId !== found?.tab?.id ||
+    binding.provider !== found?.provider?.id
+  ) {
+    throw new Error(
+      "Provisional conversation binding no longer matches the submitted LLM tab.",
+    );
+  }
+
+  provisionalSealAuthorization = {
+    tabId: binding.tabId,
+    provider: binding.provider,
+    bindingKey: binding.key,
+    expiresAt:
+      Date.now() +
+      PROVISIONAL_SEAL_AUTH_TTL_MS,
+  };
+
+  // One immediate, bounded check handles providers that
+  // changed the URL during submission. Later URL changes are
+  // handled by tabs.onUpdated without delaying chat_send_ack.
+  try {
+    const tab =
+      await chrome.tabs.get(
+        binding.tabId,
+      );
+
+    await trySealAuthorizedProvisionalBinding(
+      binding.tabId,
+      tab?.url || "",
+    );
+  } catch {}
+
+  return getLlmBinding();
+}
+
+async function findBoundLlmTab(
+  expectedTabId = null,
+) {
+  const binding = await getLlmBinding();
+
+  if (!binding) {
+    return null;
+  }
+
+  const boundTabId = binding.tabId;
+
+  if (
+    expectedTabId != null &&
+    expectedTabId !== boundTabId
+  ) {
+    throw new Error(
+      "The workflow attempted to use a tab other than its explicitly bound LLM tab.",
+    );
+  }
+
+  let tab;
+
+  try {
+    tab = await chrome.tabs.get(boundTabId);
+  } catch {
+    await clearPinnedLlmTab();
+
+    throw new Error(
+      "The bound LLM tab no longer exists. Explicit re-binding is required.",
+    );
+  }
+
+  const provider = providerForUrl(tab.url || "");
+
+  if (!provider) {
+    await clearPinnedLlmTab();
+
+    throw new Error(
+      "The bound tab is no longer a supported LLM page. Explicit re-binding is required.",
+    );
+  }
+
+  if (provider.id !== binding.provider) {
+    await clearPinnedLlmTab();
+
+    throw new Error(
+      "The bound tab changed provider. Explicit re-binding is required.",
+    );
+  }
+
+  const selection = await selectedProviderConfig();
+  const wanted =
+    selection.mode === "auto"
+      ? null
+      : utils.getProvider(selection.id);
+
+  if (wanted && provider.id !== wanted.id) {
+    await clearPinnedLlmTab();
+
+    throw new Error(
+      `The bound tab is ${provider.name}, but Mission Control expects ${wanted.name}. Explicit re-binding is required.`,
+    );
+  }
+
+  const currentIdentity =
+    conversationUtils.conversationIdentity(
+      provider.id,
+      tab.url || "",
+    );
+
+  if (currentIdentity.key !== binding.key) {
+    await clearPinnedLlmTab();
+
+    throw new Error(
+      "The bound browser tab navigated to a different conversation. Explicit re-binding is required.",
+    );
+  }
 
   return {
     tab,
     provider,
+    binding,
+    conversationIdentity: currentIdentity,
   };
-}
-
-async function findLlmTab(preferredTabId = null) {
-  const selection = await selectedProviderConfig();
-  const wanted = selection.mode === "auto" ? null : utils.getProvider(selection.id);
-  const acceptable = (tab) => {
-    const p = providerForUrl(tab?.url || "");
-    return Boolean(p && (!wanted || p.id === wanted.id));
-  };
-
-  for (const tabId of [preferredTabId, await getPinnedLlmTabId()]) {
-    if (tabId == null) continue;
-    try {
-      const tab = await chrome.tabs.get(tabId);
-      if (acceptable(tab)) { await pinLlmTab(tab.id); return { tab, provider: providerForUrl(tab.url) }; }
-    } catch {}
-  }
-
-  const activeTabs = await chrome.tabs.query({ active: true, currentWindow: true });
-  const active = activeTabs.find(acceptable);
-  if (active?.id != null) { await pinLlmTab(active.id); return { tab: active, provider: providerForUrl(active.url) }; }
-
-  const patterns = wanted ? wanted.origins : utils.allOrigins();
-  const tabs = await chrome.tabs.query({ url: patterns });
-  const tab = tabs.find((item) => item.active && acceptable(item)) || tabs.find(acceptable);
-  if (!tab?.id) return null;
-  await pinLlmTab(tab.id);
-  return { tab, provider: providerForUrl(tab.url) };
 }
 
 function receiverMissing(error) {
@@ -288,15 +657,78 @@ async function sendToContent(tabId, message) {
   }
 }
 
-async function sendTextToLlm(text, submit = true, preferredTabId = null) {
-  const found = await findLlmTab(preferredTabId || lastLlmTabId);
-  if (!found?.tab?.id) throw new Error("No matching supported LLM tab found. Open the selected provider first.");
-  await pinLlmTab(found.tab.id);
+async function sendTextToFoundLlm(
+  found,
+  text,
+  submit = true,
+  sealWorkflowBinding = false,
+) {
+  if (!found?.tab?.id || !found?.provider) {
+    throw new Error("No supported LLM tab was supplied.");
+  }
+
   await ensureContentScript(found.tab.id);
-  const result = await sendToContent(found.tab.id, { type: "SEND_TO_LLM", payload: { text, submit } });
-  if (!result?.ok) throw new Error(result?.error || `${found.provider.name} content script rejected the prompt`);
-  if (submit && result?.submitted !== true) throw new Error(`${found.provider.name} prompt was not confirmed as submitted`);
-  return { ...result, provider: found.provider.id, providerName: found.provider.name, tabId: found.tab.id };
+
+  const result = await sendToContent(
+    found.tab.id,
+    {
+      type: "SEND_TO_LLM",
+      payload: { text, submit },
+    },
+  );
+
+  if (!result?.ok) {
+    throw new Error(
+      result?.error ||
+      `${found.provider.name} content script rejected the prompt`,
+    );
+  }
+
+  if (submit && result?.submitted !== true) {
+    throw new Error(
+      `${found.provider.name} prompt was not confirmed as submitted`,
+    );
+  }
+
+  if (
+    sealWorkflowBinding &&
+    submit &&
+    result?.submitted === true
+  ) {
+    await authorizeProvisionalSealAfterSubmit(
+      found,
+    );
+  }
+
+  return {
+    ...result,
+    provider: found.provider.id,
+    providerName: found.provider.name,
+    tabId: found.tab.id,
+  };
+}
+
+async function sendTextToLlm(
+  text,
+  submit = true,
+  expectedTabId = null,
+) {
+  const found = await findBoundLlmTab(
+    expectedTabId,
+  );
+
+  if (!found?.tab?.id) {
+    throw new Error(
+      "No LLM tab is explicitly bound to this workflow. Activate the intended conversation and re-arm first.",
+    );
+  }
+
+  return sendTextToFoundLlm(
+    found,
+    text,
+    submit,
+    true,
+  );
 }
 
 function clearResponseWatchdog() { if (responseWatchdog) clearTimeout(responseWatchdog); responseWatchdog = null; }
@@ -348,7 +780,9 @@ async function downloadOneCandidate(candidate, tabId, provider) {
 }
 
 async function handleDownloadRequest(message) {
-  const found = await findLlmTab(message.tab_id || lastLlmTabId);
+  const found = await findBoundLlmTab(
+    message.tab_id || null,
+  );
   if (!found?.tab?.id) throw new Error("No provider tab found for attachment download");
   const results = [];
   for (const candidate of Array.isArray(message.candidates) ? message.candidates : []) results.push(await downloadOneCandidate(candidate, found.tab.id, found.provider));
@@ -774,6 +1208,29 @@ async function handleNativeMessage(message) {
   }
 
   broadcast(message);
+
+  if (message?.kind === "state") {
+    const lifecycle = String(
+      message.state?.lifecycle || "",
+    );
+
+    if (lifecycle === "recovery_required") {
+      recoveryProviderId = String(
+        message.state?.recovery?.active_provider ||
+        message.state?.active_provider ||
+        "",
+      ) || null;
+
+      await clearPinnedLlmTab();
+    } else {
+      recoveryProviderId = null;
+
+      if (lifecycle === "complete") {
+        await clearPinnedLlmTab();
+      }
+    }
+  }
+
   if (message?.kind === "send_to_chatgpt" || message?.kind === "send_to_llm") {
     try {
       const result = await sendTextToLlm(message.text, true, message.tab_id || null);
@@ -795,7 +1252,41 @@ async function getDownloadCandidates(tabId, responseKey) {
 }
 
 chrome.runtime.onInstalled.addListener(() => { chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(() => {}); connectNative(); });
-chrome.runtime.onStartup.addListener(connectNative);
+chrome.runtime.onStartup.addListener(() => {
+  clearPinnedLlmTab()
+    .catch(() => {})
+    .finally(connectNative);
+});
+
+chrome.tabs.onUpdated.addListener(
+  (tabId, changeInfo, tab) => {
+    const authorization =
+      activeProvisionalSealAuthorization();
+
+    if (
+      !authorization ||
+      authorization.tabId !== tabId
+    ) {
+      return;
+    }
+
+    const url = String(
+      changeInfo?.url ||
+      tab?.url ||
+      "",
+    );
+
+    if (!url) {
+      return;
+    }
+
+    trySealAuthorizedProvisionalBinding(
+      tabId,
+      url,
+    ).catch(() => {});
+  },
+);
+
 connectNative();
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
@@ -803,26 +1294,40 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     const tabId = sender.tab?.id;
 
     (async () => {
-      const boundTabId = await getPinnedLlmTabId();
-
-      if (
-        boundTabId != null &&
-        tabId != null &&
-        tabId !== boundTabId
-      ) {
+      if (tabId == null) {
         sendResponse({
           ok: true,
           ignored: true,
-          reason: "Response came from a non-bound LLM tab",
+          reason: "Response came from an unbound LLM tab",
+        });
+        return;
+      }
+
+      try {
+        const found = await findBoundLlmTab(tabId);
+
+        if (!found) {
+          sendResponse({
+            ok: true,
+            ignored: true,
+            reason: "Response came from an unbound LLM tab",
+          });
+          return;
+        }
+      } catch (error) {
+        sendResponse({
+          ok: true,
+          ignored: true,
+          reason: String(
+            error?.message ||
+            "Response conversation identity did not match the bound workflow",
+          ),
         });
         return;
       }
 
       clearResponseWatchdog();
 
-      if (tabId != null) {
-        await pinLlmTab(tabId);
-      }
       const downloads = tabId != null ? await getDownloadCandidates(tabId, message.payload?.responseKey) : { links: [] };
       sendNative({ type: "assistant_response", payload: { ...message.payload, tab_id: tabId, downloads: downloads?.links || [] } });
       sendResponse({ ok: true });
@@ -832,32 +1337,87 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   if (message?.type === "LLM_ACCOUNT_SAFETY_SIGNAL") {
     (async () => {
-      const tabId = sender.tab?.id;
-      const boundTabId = await getPinnedLlmTabId();
+      const tabId =
+        sender.tab?.id;
 
-      if (
-        boundTabId != null &&
-        tabId != null &&
-        tabId !== boundTabId
-      ) {
+      if (tabId == null) {
         sendResponse({
           ok: true,
           ignored: true,
-          reason: "Safety signal came from a non-bound LLM tab",
+          reason:
+            "Safety signal came from an unbound LLM tab",
         });
         return;
       }
 
+      const binding =
+        await peekLlmBinding();
+
+      if (
+        !binding ||
+        binding.tabId !== tabId
+      ) {
+        sendResponse({
+          ok: true,
+          ignored: true,
+          reason:
+            "Safety signal came from an unbound LLM tab",
+        });
+        return;
+      }
+
+      let mismatchReason = "";
+
+      try {
+        const found =
+          await findBoundLlmTab(tabId);
+
+        if (!found) {
+          mismatchReason =
+            "Bound workflow identity could not be validated.";
+        }
+      } catch (error) {
+        mismatchReason = String(
+          error?.message ||
+          "Bound workflow conversation identity changed.",
+        );
+      }
+
+      const payload = {
+        ...(message.payload || {}),
+        provider: binding.provider,
+      };
+
+      if (mismatchReason) {
+        payload.text = [
+          String(
+            payload.text ||
+            "Provider safety warning",
+          ),
+          `Workflow binding warning: ${mismatchReason}`,
+        ].join(" ");
+      }
+
+      // A safety signal from the exact workflow tab is always
+      // fail-safe, even if that tab changed conversation.
       sendNative({
         type: "provider_safety_signal",
-        payload: message.payload || {},
+        payload,
       });
 
-      sendResponse({ ok: true });
+      sendResponse({
+        ok: true,
+        failClosed:
+          Boolean(mismatchReason),
+        reason:
+          mismatchReason || undefined,
+      });
     })().catch((error) => {
       sendResponse({
         ok: false,
-        error: String(error?.message || error),
+        error: String(
+          error?.message || error,
+        ),
       });
     });
 
@@ -869,7 +1429,49 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     (async () => {
       if (command.action === "ping") sendNative({ type: "ping" });
       else if (command.action === "get_state") sendNative({ type: "get_state" });
-      else if (command.action === "diagnostics") {
+      else if (command.action === "recovery_prepare") {
+        if (!recoveryProviderId) {
+          throw new Error(
+            "Recovery context is not loaded yet. Refresh status and retry before re-binding a browser tab.",
+          );
+        }
+
+        const found = await inspectActiveLlmTab();
+
+        if (
+          found.provider.id !== recoveryProviderId
+        ) {
+          throw new Error(
+            `Recovery was interrupted on ${recoveryProviderId}, but the active tab is ${found.provider.id}. Activate the original provider or discard the interrupted run.`,
+          );
+        }
+
+        await pinLlmBinding(found);
+
+        sendNative({
+          type: "recovery_prepare",
+          tab_id: found.tab.id,
+          provider: found.provider.id,
+        });
+
+        return {
+          ok: true,
+          rebound: true,
+          tabId: found.tab.id,
+          provider: found.provider.id,
+        };
+      } else if (command.action === "recovery_discard") {
+        await clearPinnedLlmTab();
+
+        sendNative({
+          type: "recovery_discard",
+        });
+
+        return {
+          ok: true,
+          discarded: true,
+        };
+      } else if (command.action === "diagnostics") {
         return {
           ok: true,
           diagnostics: await runDiagnostics(),
@@ -889,12 +1491,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       else if (command.action === "reset_session") sendNative({ type: "reset_session" });
       else if (command.action === "approval") sendNative({ type: "approval_decision", approval_id: command.approval_id, decision: command.decision });
       else if (command.action === "send_text") {
-        const found = await findActiveLlmTab();
+        const found = await inspectActiveLlmTab();
 
-        const value = await sendTextToLlm(
+        const value = await sendTextToFoundLlm(
+          found,
           command.text || "",
           command.submit !== false,
-          found.tab.id,
         );
 
         return {
@@ -902,7 +1504,15 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           value,
         };
       }
-      return { ok: true, nativeConnected: nativeReady, provider: (await findLlmTab(lastLlmTabId))?.provider?.id || null };
+      const binding =
+        await peekLlmBinding();
+
+      return {
+        ok: true,
+        nativeConnected: nativeReady,
+        provider:
+          binding?.provider || null,
+      };
     })().then(sendResponse).catch((error) => {
       broadcast({ kind: "error", text: String(error?.message || error) });
       sendResponse({ ok: false, error: String(error?.message || error) });

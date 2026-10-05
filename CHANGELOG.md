@@ -2,6 +2,26 @@
 
 All notable public changes will be documented here. This project follows Semantic Versioning where Chrome extension version constraints allow it.
 
+## [0.3.3] - 2026-10-05
+
+### Crash-safe recovery and conversation identity
+
+- Added persisted runtime snapshots for workflow lifecycle, status, provider, safety guard, pending-approval review metadata, and autonomy-budget state.
+- Added explicit `RECOVERY_REQUIRED` startup behavior after interrupted active workflows.
+- Recovery never automatically replays an interrupted command, approval, browser download, execution cursor, or LLM prompt.
+- Added explicit Prepare Recovery and Discard Recovery actions in Mission Control.
+- Recovery preparation validates the interrupted provider and explicitly rebinds the active browser tab before re-arming.
+- Replaced tab-only workflow binding with provider, tab, and conversation identity.
+- Same-tab navigation to another conversation now fails closed.
+- Added controlled provisional new-chat sealing after a Bridge-originated prompt is confirmed as submitted.
+- Generic send operations and diagnostics cannot establish or mutate workflow conversation binding.
+- Inbound assistant responses and provider safety signals are checked against the bound workflow conversation.
+- Provider safety guards and autonomy-budget counters survive native-host restart.
+- Added persistence checkpoints before command execution, browser downloads, and outbound LLM sends.
+- Canonical project state is committed before runtime READY_TO_ARM and COMPLETE transitions.
+- Added real cross-process crash/restart integration coverage proving fail-closed recovery without automatic replay.
+- Bumped extension, content-script, and Mission Control versions to 0.3.3.
+
 ## [0.3.2] - 2026-09-23
 
 ### Install diagnostics, active-tab binding and roadmap progress

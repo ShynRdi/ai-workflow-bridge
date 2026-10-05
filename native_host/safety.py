@@ -6,7 +6,7 @@ from typing import Any
 
 
 class RunBudget:
-    """In-memory session budget. Conservative by design; browser/account signals always pause."""
+    """Guarded session budget with restart-safe state export/restore."""
 
     def __init__(self) -> None:
         self.lock = threading.RLock()
@@ -36,6 +36,90 @@ class RunBudget:
         with self.lock:
             self.block_reason = ""
             self.cooldown_until = 0.0
+
+    def export_state(self) -> dict[str, Any]:
+        with self.lock:
+            manual_block = self.cooldown_until == float("inf")
+
+            return {
+                "version": 1,
+                "provider_id": str(self.provider_id or "unknown"),
+                "session_started_at": float(self.session_started_at),
+                "turn_timestamps": [
+                    float(value)
+                    for value in self.turn_timestamps
+                ],
+                "last_turn_at": float(self.last_turn_at),
+                "cooldown_until": (
+                    None
+                    if manual_block
+                    else float(self.cooldown_until)
+                ),
+                "manual_block": manual_block,
+                "block_reason": str(self.block_reason or ""),
+            }
+
+    def restore_state(
+        self,
+        payload: dict[str, Any] | None,
+    ) -> bool:
+        if not isinstance(payload, dict):
+            return False
+
+        try:
+            provider_id = str(
+                payload.get("provider_id") or "unknown"
+            )
+
+            session_started_at = float(
+                payload.get("session_started_at") or 0.0
+            )
+
+            if session_started_at <= 0:
+                session_started_at = time.time()
+
+            raw_turns = payload.get("turn_timestamps") or []
+
+            turn_timestamps = [
+                float(value)
+                for value in raw_turns
+                if isinstance(value, (int, float))
+            ]
+
+            last_turn_at = float(
+                payload.get("last_turn_at") or 0.0
+            )
+
+            manual_block = bool(
+                payload.get("manual_block")
+            )
+
+            raw_cooldown = payload.get("cooldown_until")
+
+            cooldown_until = (
+                float("inf")
+                if manual_block
+                else max(
+                    0.0,
+                    float(raw_cooldown or 0.0),
+                )
+            )
+
+            block_reason = str(
+                payload.get("block_reason") or ""
+            )
+        except (TypeError, ValueError):
+            return False
+
+        with self.lock:
+            self.provider_id = provider_id
+            self.session_started_at = session_started_at
+            self.turn_timestamps = turn_timestamps
+            self.last_turn_at = last_turn_at
+            self.cooldown_until = cooldown_until
+            self.block_reason = block_reason
+
+        return True
 
     def decision(self, config: dict[str, Any]) -> dict[str, Any]:
         with self.lock:
