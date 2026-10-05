@@ -6,6 +6,10 @@ import threading
 from datetime import datetime, timezone
 from typing import Any
 
+from checkpoint import (
+    CHECKPOINT_STATUSES,
+    validate_checkpoint_metadata,
+)
 from config import DB_PATH, ensure_app_dir
 
 
@@ -40,6 +44,16 @@ class Store:
               updated_at TEXT NOT NULL,
               payload TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS checkpoints (
+              checkpoint_id TEXT PRIMARY KEY,
+              created_at TEXT NOT NULL,
+              updated_at TEXT NOT NULL,
+              status TEXT NOT NULL,
+              workspace_root TEXT NOT NULL,
+              payload TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS checkpoints_workspace_created
+              ON checkpoints(workspace_root, created_at DESC);
         """)
         self.db.commit()
 
@@ -113,6 +127,280 @@ class Store:
                 (str(key),),
             )
             self.db.commit()
+
+    def put_checkpoint(
+        self,
+        payload: dict[str, Any],
+    ) -> str:
+        validate_checkpoint_metadata(
+            payload
+        )
+
+        checkpoint_id = str(
+            payload["checkpoint_id"]
+        )
+
+        created_at = str(
+            payload["created_at"]
+        )
+
+        status = str(
+            payload["status"]
+        )
+
+        workspace_root = str(
+            payload["workspace_root"]
+        )
+
+        updated_at = now_iso()
+
+        encoded = json.dumps(
+            payload,
+            ensure_ascii=False,
+        )
+
+        with self.lock:
+            self.db.execute(
+                """
+                INSERT INTO checkpoints(
+                  checkpoint_id,
+                  created_at,
+                  updated_at,
+                  status,
+                  workspace_root,
+                  payload
+                )
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(checkpoint_id) DO UPDATE SET
+                  updated_at=excluded.updated_at,
+                  status=excluded.status,
+                  workspace_root=excluded.workspace_root,
+                  payload=excluded.payload
+                """,
+                (
+                    checkpoint_id,
+                    created_at,
+                    updated_at,
+                    status,
+                    workspace_root,
+                    encoded,
+                ),
+            )
+
+            self.db.commit()
+
+        return checkpoint_id
+
+    def get_checkpoint(
+        self,
+        checkpoint_id: str,
+    ) -> dict[str, Any] | None:
+        with self.lock:
+            row = self.db.execute(
+                """
+                SELECT
+                  checkpoint_id,
+                  created_at,
+                  updated_at,
+                  status,
+                  workspace_root,
+                  payload
+                FROM checkpoints
+                WHERE checkpoint_id=?
+                """,
+                (
+                    str(checkpoint_id),
+                ),
+            ).fetchone()
+
+        if row is None:
+            return None
+
+        try:
+            payload = json.loads(
+                row["payload"]
+            )
+        except (
+            TypeError,
+            json.JSONDecodeError,
+        ):
+            return None
+
+        if not isinstance(payload, dict):
+            return None
+
+        payload = dict(payload)
+
+        payload["checkpoint_id"] = str(
+            row["checkpoint_id"]
+        )
+
+        payload["created_at"] = str(
+            row["created_at"]
+        )
+
+        payload["updated_at"] = str(
+            row["updated_at"]
+        )
+
+        payload["status"] = str(
+            row["status"]
+        )
+
+        payload["workspace_root"] = str(
+            row["workspace_root"]
+        )
+
+        return payload
+
+    def update_checkpoint_status(
+        self,
+        checkpoint_id: str,
+        status: str,
+    ) -> bool:
+        value = str(
+            status or ""
+        ).strip()
+
+        if value not in CHECKPOINT_STATUSES:
+            raise ValueError(
+                f"Invalid checkpoint status: {value}"
+            )
+
+        with self.lock:
+            row = self.db.execute(
+                """
+                SELECT payload
+                FROM checkpoints
+                WHERE checkpoint_id=?
+                """,
+                (
+                    str(checkpoint_id),
+                ),
+            ).fetchone()
+
+            if row is None:
+                return False
+
+            try:
+                payload = json.loads(
+                    row["payload"]
+                )
+            except (
+                TypeError,
+                json.JSONDecodeError,
+            ):
+                payload = {}
+
+            if not isinstance(payload, dict):
+                payload = {}
+
+            payload["status"] = value
+
+            self.db.execute(
+                """
+                UPDATE checkpoints
+                SET
+                  status=?,
+                  updated_at=?,
+                  payload=?
+                WHERE checkpoint_id=?
+                """,
+                (
+                    value,
+                    now_iso(),
+                    json.dumps(
+                        payload,
+                        ensure_ascii=False,
+                    ),
+                    str(checkpoint_id),
+                ),
+            )
+
+            self.db.commit()
+
+        return True
+
+    def list_checkpoints(
+        self,
+        *,
+        workspace_root: str | None = None,
+        status: str | None = None,
+        limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        clauses: list[str] = []
+        params: list[Any] = []
+
+        if workspace_root is not None:
+            clauses.append(
+                "workspace_root=?"
+            )
+            params.append(
+                str(workspace_root)
+            )
+
+        if status is not None:
+            value = str(
+                status
+            ).strip()
+
+            if value not in CHECKPOINT_STATUSES:
+                raise ValueError(
+                    f"Invalid checkpoint status: {value}"
+                )
+
+            clauses.append(
+                "status=?"
+            )
+            params.append(value)
+
+        where = (
+            " WHERE " + " AND ".join(clauses)
+            if clauses
+            else ""
+        )
+
+        bounded_limit = max(
+            1,
+            min(
+                int(limit),
+                500,
+            ),
+        )
+
+        params.append(
+            bounded_limit
+        )
+
+        query = (
+            "SELECT checkpoint_id "
+            "FROM checkpoints"
+            f"{where} "
+            "ORDER BY created_at DESC "
+            "LIMIT ?"
+        )
+
+        with self.lock:
+            rows = self.db.execute(
+                query,
+                tuple(params),
+            ).fetchall()
+
+        result: list[dict[str, Any]] = []
+
+        for row in rows:
+            checkpoint = self.get_checkpoint(
+                str(
+                    row["checkpoint_id"]
+                )
+            )
+
+            if checkpoint is not None:
+                result.append(
+                    checkpoint
+                )
+
+        return result
 
     def expire_pending_approvals(self) -> None:
         with self.lock:
