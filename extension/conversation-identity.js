@@ -1,31 +1,157 @@
 (() => {
-  const PROVISIONAL_PATHS = new Set([
-    "/",
-    "/new",
-    "/chat",
-    "/chat/new",
-    "/new-chat",
-    "/app",
-  ]);
+  const ROUTE_RULES = {
+    chatgpt: {
+      provisional: new Set(["/"]),
+      conversation: [
+        /^\/c\/[^/]+$/,
+      ],
+    },
 
-  function normalizeConversationPath(url = "") {
-    const parsed = new URL(String(url || ""));
+    claude: {
+      provisional: new Set(["/", "/new"]),
+      conversation: [
+        /^\/chat\/[^/]+$/,
+      ],
+    },
 
-    let pathname = parsed.pathname || "/";
+    gemini: {
+      provisional: new Set(["/", "/app"]),
+      conversation: [
+        /^\/app\/[^/]+$/,
+      ],
+    },
 
-    pathname = pathname.replace(/\/{2,}/g, "/");
+    deepseek: {
+      provisional: new Set(["/"]),
+      conversation: [
+        /^\/a\/chat\/s\/[^/]+$/,
+      ],
+    },
 
-    if (pathname.length > 1) {
-      pathname = pathname.replace(/\/+$/, "");
+    grok: {
+      provisional: new Set(["/"]),
+      conversation: [
+        /^\/c\/[^/]+$/,
+      ],
+    },
+
+    perplexity: {
+      provisional: new Set(["/"]),
+      conversation: [
+        /^\/search\/[^/]+$/,
+      ],
+    },
+
+    mistral: {
+      provisional: new Set(["/", "/chat"]),
+      conversation: [
+        /^\/chat\/[^/]+$/,
+      ],
+    },
+
+    copilot: {
+      provisional: new Set(["/"]),
+      conversation: [
+        /^\/chats\/[^/]+$/,
+      ],
+    },
+
+    qwen: {
+      provisional: new Set(["/"]),
+      conversation: [
+        /^\/chat\/[^/]+$/,
+      ],
+    },
+
+    kimi: {
+      provisional: new Set(["/"]),
+      conversation: [
+        /^\/chat\/[^/]+$/,
+      ],
+    },
+  };
+
+  const DEFAULT_PROVISIONAL_PATHS =
+    new Set(["/"]);
+
+  function normalizePathname(pathname = "/") {
+    let value = String(
+      pathname || "/",
+    );
+
+    if (!value.startsWith("/")) {
+      value = `/${value}`;
     }
 
-    return pathname || "/";
+    value = value.replace(
+      /\/{2,}/g,
+      "/",
+    );
+
+    if (value.length > 1) {
+      value = value.replace(
+        /\/+$/,
+        "",
+      );
+    }
+
+    return value || "/";
   }
 
-  function isProvisionalConversationPath(pathname = "") {
-    const value = String(pathname || "/");
+  function normalizeConversationPath(url = "") {
+    const parsed = new URL(
+      String(url || ""),
+    );
 
-    return PROVISIONAL_PATHS.has(value);
+    return normalizePathname(
+      parsed.pathname || "/",
+    );
+  }
+
+  function classifyConversationPath(
+    providerId,
+    pathname,
+  ) {
+    const provider = String(
+      providerId || "",
+    ).trim();
+
+    const value = normalizePathname(
+      pathname,
+    );
+
+    const rules =
+      ROUTE_RULES[provider] || null;
+
+    const provisional =
+      rules?.provisional ||
+      DEFAULT_PROVISIONAL_PATHS;
+
+    if (provisional.has(value)) {
+      return "provisional";
+    }
+
+    if (
+      rules?.conversation?.some(
+        (pattern) => pattern.test(value),
+      )
+    ) {
+      return "conversation";
+    }
+
+    return "other";
+  }
+
+  function isProvisionalConversationPath(
+    pathname = "",
+    providerId = "",
+  ) {
+    return (
+      classifyConversationPath(
+        providerId,
+        pathname,
+      ) === "provisional"
+    );
   }
 
   function conversationIdentity(
@@ -42,20 +168,31 @@
       );
     }
 
-    const pathname = normalizeConversationPath(url);
+    const pathname =
+      normalizeConversationPath(url);
+
+    const kind =
+      classifyConversationPath(
+        provider,
+        pathname,
+      );
 
     return {
       version: 1,
       provider,
       pathname,
       key: `${provider}:${pathname}`,
+      kind,
       provisional:
-        isProvisionalConversationPath(pathname),
+        kind === "provisional",
+      autoSealable:
+        kind === "conversation",
     };
   }
 
   globalThis.AWB_CONVERSATION_IDENTITY = {
     normalizeConversationPath,
+    classifyConversationPath,
     isProvisionalConversationPath,
     conversationIdentity,
   };

@@ -235,7 +235,7 @@ def test_generic_send_text_does_not_rebind_workflow():
         'command.action === "send_text"'
     )
     end = background.index(
-        "let bound = null",
+        "const binding =",
         start,
     )
 
@@ -243,9 +243,8 @@ def test_generic_send_text_does_not_rebind_workflow():
 
     assert "inspectActiveLlmTab()" in block
     assert "findActiveLlmTab()" not in block
-    assert "pinLlmTab(" not in block
-
-
+    assert "pinLlmBinding(" not in block
+    assert "authorizeProvisionalSealAfterSubmit(" not in block
 
 def test_recovery_requires_loaded_context_before_tab_binding():
     background = (EXT / "background.js").read_text(
@@ -407,14 +406,9 @@ def test_binding_storage_does_not_use_query_or_fragment():
     assert ".hash" not in block
 
 
-def test_provisional_binding_is_sealed_only_after_confirmed_submission():
+def test_provisional_binding_is_authorized_only_after_confirmed_submission():
     background = (EXT / "background.js").read_text(
         encoding="utf-8"
-    )
-
-    assert (
-        "async function sealProvisionalBindingAfterSubmit("
-        in background
     )
 
     start = background.index(
@@ -430,12 +424,11 @@ def test_provisional_binding_is_sealed_only_after_confirmed_submission():
     submitted_check = block.index(
         "result?.submitted === true"
     )
-    seal = block.index(
-        "sealProvisionalBindingAfterSubmit("
+    authorization = block.index(
+        "authorizeProvisionalSealAfterSubmit("
     )
 
-    assert submitted_check < seal
-
+    assert submitted_check < authorization
 
 def test_draft_only_send_cannot_seal_provisional_binding():
     background = (EXT / "background.js").read_text(
@@ -458,13 +451,13 @@ def test_draft_only_send_cannot_seal_provisional_binding():
     assert "result?.submitted === true" in block
 
 
-def test_provisional_sealing_is_bounded_and_same_tab_only():
+def test_provisional_sealing_is_event_driven_and_same_tab_only():
     background = (EXT / "background.js").read_text(
         encoding="utf-8"
     )
 
     start = background.index(
-        "async function sealProvisionalBindingAfterSubmit("
+        "function clearProvisionalSealAuthorization()"
     )
     end = background.index(
         "async function findBoundLlmTab(",
@@ -473,35 +466,33 @@ def test_provisional_sealing_is_bounded_and_same_tab_only():
 
     block = background[start:end]
 
-    assert "PROVISIONAL_SEAL_TIMEOUT_MS" in block
-    assert "chrome.tabs.get(binding.tabId)" in block
-    assert "binding.tabId !== found?.tab?.id" in block
+    assert "PROVISIONAL_SEAL_AUTH_TTL_MS" in background
+    assert "trySealAuthorizedProvisionalBinding(" in block
+    assert "authorization.tabId !== tabId" in block
+    assert "identity.autoSealable" in block
+
+    assert "PROVISIONAL_SEAL_POLL_MS" not in block
+    assert "while (Date.now()" not in block
+
+    assert "chrome.tabs.onUpdated.addListener" in background
+
+def test_provisional_sealing_requires_auto_sealable_route():
+    background = (EXT / "background.js").read_text(
+        encoding="utf-8"
+    )
+
+    identity = (
+        EXT / "conversation-identity.js"
+    ).read_text(
+        encoding="utf-8"
+    )
+
+    assert "if (!identity.autoSealable)" in background
+    assert 'return "other";' in identity
     assert (
-        "binding.provider !== found?.provider?.id"
-        in block
+        'autoSealable:'
+        in identity
     )
-    assert "if (!identity.provisional)" in block
-    assert "persistLlmBinding(sealed)" in block
-
-
-def test_provisional_sealing_never_guesses_after_timeout():
-    background = (EXT / "background.js").read_text(
-        encoding="utf-8"
-    )
-
-    start = background.index(
-        "async function sealProvisionalBindingAfterSubmit("
-    )
-    end = background.index(
-        "async function findBoundLlmTab(",
-        start,
-    )
-
-    block = background[start:end]
-
-    assert "return binding;" in block
-    assert "provisional: false" in block
-
 
 def test_only_bound_workflow_send_can_seal_provisional_binding():
     background = (EXT / "background.js").read_text(
@@ -544,15 +535,16 @@ def test_generic_send_text_has_no_sealing_authority():
         'command.action === "send_text"'
     )
     end = background.index(
-        "let bound = null",
+        "const binding =",
         start,
     )
 
     block = background[start:end]
 
     assert "sendTextToFoundLlm(" in block
-    assert "sealProvisionalBindingAfterSubmit" not in block
-
+    assert "authorizeProvisionalSealAfterSubmit" not in block
+    assert "trySealAuthorizedProvisionalBinding" not in block
+    assert "pinLlmBinding(" not in block
 
 def test_inbound_assistant_response_validates_full_binding():
     background = (EXT / "background.js").read_text(
@@ -615,3 +607,62 @@ def test_same_tab_different_conversation_is_fail_closed():
         "navigated to a different conversation"
         in block
     )
+
+
+def test_conversation_binding_clear_has_one_authoritative_implementation():
+    background = (EXT / "background.js").read_text(
+        encoding="utf-8"
+    )
+
+    assert (
+        background.count(
+            "async function clearPinnedLlmTab()"
+        )
+        == 1
+    )
+
+    assert "lastLlmTabId" not in background
+
+
+def test_read_only_command_status_does_not_validate_or_clear_binding():
+    background = (EXT / "background.js").read_text(
+        encoding="utf-8"
+    )
+
+    start = background.index(
+        'if (message?.type === "BRIDGE_COMMAND")'
+    )
+
+    block = background[start:]
+
+    assert "await peekLlmBinding()" in block
+
+    tail = block[
+        block.rindex(
+            "const binding ="
+        ):
+    ]
+
+    assert "findBoundLlmTab()" not in tail
+
+
+def test_same_bound_tab_safety_mismatch_fails_safe():
+    background = (EXT / "background.js").read_text(
+        encoding="utf-8"
+    )
+
+    start = background.index(
+        'message?.type === "LLM_ACCOUNT_SAFETY_SIGNAL"'
+    )
+    end = background.index(
+        'message?.type === "BRIDGE_COMMAND"',
+        start,
+    )
+
+    block = background[start:end]
+
+    assert "await peekLlmBinding()" in block
+    assert "binding.tabId !== tabId" in block
+    assert "findBoundLlmTab(tabId)" in block
+    assert 'type: "provider_safety_signal"' in block
+    assert "failClosed:" in block

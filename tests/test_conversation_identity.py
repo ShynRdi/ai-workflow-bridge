@@ -82,30 +82,69 @@ def test_provider_is_part_of_identity():
     assert chatgpt["key"] != claude["key"]
 
 
-def test_new_chat_paths_are_provisional():
+def test_provider_aware_new_chat_paths_are_provisional():
+    cases = [
+        (
+            "chatgpt",
+            "https://chatgpt.com/",
+        ),
+        (
+            "claude",
+            "https://claude.ai/new",
+        ),
+        (
+            "gemini",
+            "https://gemini.google.com/app",
+        ),
+    ]
+
+    for provider, url in cases:
+        result = run_identity(
+            provider,
+            url,
+        )
+
+        assert result["kind"] == "provisional"
+        assert result["provisional"] is True
+        assert result["autoSealable"] is False
+
+
+def test_generic_app_and_chat_paths_are_not_auto_sealable():
     for url in [
-        "https://chatgpt.com/",
-        "https://example.test/new",
-        "https://example.test/chat",
-        "https://example.test/chat/new",
-        "https://example.test/new-chat",
         "https://example.test/app",
+        "https://example.test/chat",
+        "https://example.test/settings",
+        "https://example.test/account",
     ]:
         result = run_identity(
             "provider",
             url,
         )
 
-        assert result["provisional"] is True
+        assert result["kind"] == "other"
+        assert result["provisional"] is False
+        assert result["autoSealable"] is False
 
 
-def test_existing_conversation_path_is_sealed():
+def test_existing_conversation_path_is_auto_sealable():
     result = run_identity(
         "chatgpt",
         "https://chatgpt.com/c/abc123",
     )
 
+    assert result["kind"] == "conversation"
     assert result["provisional"] is False
+    assert result["autoSealable"] is True
+
+
+def test_settings_path_is_never_auto_sealed():
+    result = run_identity(
+        "chatgpt",
+        "https://chatgpt.com/settings",
+    )
+
+    assert result["kind"] == "other"
+    assert result["autoSealable"] is False
 
 
 def test_trailing_slash_normalization_is_stable():
