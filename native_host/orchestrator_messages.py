@@ -37,6 +37,14 @@ class MessageMixin:
             })
             return
 
+        if msg_type == "checkpoint_accept":
+            self.accept_latest_checkpoint()
+            return
+
+        if msg_type == "checkpoint_rollback":
+            self.rollback_latest_checkpoint()
+            return
+
         if msg_type == "recovery_prepare":
             tab_id = message.get("tab_id")
             provider = str(

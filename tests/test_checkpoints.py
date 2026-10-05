@@ -328,3 +328,271 @@ def test_invalid_checkpoint_status_is_rejected(
             checkpoint_id,
             "executing",
         )
+
+
+def test_checkpoint_atomic_transition_ready_to_accepted(
+    monkeypatch,
+    tmp_path: Path,
+):
+    store = isolated_store(
+        monkeypatch,
+        tmp_path,
+    )
+
+    payload = checkpoint(
+        tmp_path,
+        checkpoint_id="cp-accept",
+    )
+
+    store.put_checkpoint(
+        payload
+    )
+
+    assert store.transition_checkpoint_status(
+        "cp-accept",
+        expected_status="ready",
+        new_status="accepted",
+    )
+
+    restored = store.get_checkpoint(
+        "cp-accept"
+    )
+
+    assert restored is not None
+    assert restored["status"] == "accepted"
+
+
+def test_checkpoint_atomic_transition_rejects_stale_expected_status(
+    monkeypatch,
+    tmp_path: Path,
+):
+    store = isolated_store(
+        monkeypatch,
+        tmp_path,
+    )
+
+    payload = checkpoint(
+        tmp_path,
+        checkpoint_id="cp-cas",
+    )
+
+    store.put_checkpoint(
+        payload
+    )
+
+    assert store.transition_checkpoint_status(
+        "cp-cas",
+        expected_status="ready",
+        new_status="rolling_back",
+    )
+
+    assert (
+        store.transition_checkpoint_status(
+            "cp-cas",
+            expected_status="ready",
+            new_status="accepted",
+        )
+        is False
+    )
+
+    restored = store.get_checkpoint(
+        "cp-cas"
+    )
+
+    assert restored is not None
+    assert restored["status"] == "rolling_back"
+
+
+def test_checkpoint_rollback_transition_chain(
+    monkeypatch,
+    tmp_path: Path,
+):
+    store = isolated_store(
+        monkeypatch,
+        tmp_path,
+    )
+
+    payload = checkpoint(
+        tmp_path,
+        checkpoint_id="cp-rollback",
+    )
+
+    store.put_checkpoint(
+        payload
+    )
+
+    assert store.transition_checkpoint_status(
+        "cp-rollback",
+        expected_status="ready",
+        new_status="rolling_back",
+    )
+
+    assert store.transition_checkpoint_status(
+        "cp-rollback",
+        expected_status="rolling_back",
+        new_status="rolled_back",
+    )
+
+    restored = store.get_checkpoint(
+        "cp-rollback"
+    )
+
+    assert restored is not None
+    assert restored["status"] == "rolled_back"
+
+
+def test_checkpoint_rollback_failure_transition(
+    monkeypatch,
+    tmp_path: Path,
+):
+    store = isolated_store(
+        monkeypatch,
+        tmp_path,
+    )
+
+    payload = checkpoint(
+        tmp_path,
+        checkpoint_id="cp-failed",
+    )
+
+    store.put_checkpoint(
+        payload
+    )
+
+    assert store.transition_checkpoint_status(
+        "cp-failed",
+        expected_status="ready",
+        new_status="rolling_back",
+    )
+
+    assert store.transition_checkpoint_status(
+        "cp-failed",
+        expected_status="rolling_back",
+        new_status="rollback_failed",
+    )
+
+    restored = store.get_checkpoint(
+        "cp-failed"
+    )
+
+    assert restored is not None
+    assert (
+        restored["status"]
+        == "rollback_failed"
+    )
+
+
+@pytest.mark.parametrize(
+    ("current", "target"),
+    [
+        (
+            "ready",
+            "rolled_back",
+        ),
+        (
+            "accepted",
+            "ready",
+        ),
+        (
+            "accepted",
+            "rolling_back",
+        ),
+        (
+            "rolled_back",
+            "ready",
+        ),
+        (
+            "rollback_failed",
+            "rolling_back",
+        ),
+    ],
+)
+def test_checkpoint_invalid_lifecycle_transition_is_rejected(
+    monkeypatch,
+    tmp_path: Path,
+    current,
+    target,
+):
+    store = isolated_store(
+        monkeypatch,
+        tmp_path,
+    )
+
+    payload = checkpoint(
+        tmp_path,
+        checkpoint_id=(
+            "cp-invalid-"
+            + current
+            + "-"
+            + target
+        ),
+        status=current,
+    )
+
+    store.put_checkpoint(
+        payload
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="Invalid checkpoint transition",
+    ):
+        store.transition_checkpoint_status(
+            payload["checkpoint_id"],
+            expected_status=current,
+            new_status=target,
+        )
+
+
+def test_missing_checkpoint_transition_returns_false(
+    monkeypatch,
+    tmp_path: Path,
+):
+    store = isolated_store(
+        monkeypatch,
+        tmp_path,
+    )
+
+    assert (
+        store.transition_checkpoint_status(
+            "does-not-exist",
+            expected_status="ready",
+            new_status="accepted",
+        )
+        is False
+    )
+
+
+def test_legacy_status_update_cannot_bypass_lifecycle(
+    monkeypatch,
+    tmp_path: Path,
+):
+    store = isolated_store(
+        monkeypatch,
+        tmp_path,
+    )
+
+    payload = checkpoint(
+        tmp_path,
+        checkpoint_id="cp-legacy-guard",
+    )
+
+    store.put_checkpoint(
+        payload
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="Invalid checkpoint transition",
+    ):
+        store.update_checkpoint_status(
+            "cp-legacy-guard",
+            "rolled_back",
+        )
+
+    restored = store.get_checkpoint(
+        "cp-legacy-guard"
+    )
+
+    assert restored is not None
+    assert restored["status"] == "ready"

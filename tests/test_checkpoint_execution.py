@@ -641,3 +641,143 @@ def test_r3_checkpoint_explicitly_limits_rollback_scope(
             "checkpoint_id"
         ]
     )
+
+
+def test_command_execution_flag_is_active_only_inside_execution_window(
+    monkeypatch,
+    tmp_path,
+):
+    observed = []
+
+    monkeypatch.setattr(
+        orchestrator_risk,
+        "git_snapshot",
+        lambda _workspace: {
+            "is_git": False,
+        },
+    )
+
+    monkeypatch.setattr(
+        orchestrator_risk,
+        "classify",
+        lambda _cmd, _workspace:
+        SimpleNamespace(
+            level="low",
+        ),
+    )
+
+    monkeypatch.setattr(
+        orchestrator_risk,
+        "merge_risk",
+        lambda _local, _llm:
+        risk(
+            level="low",
+            risk_level="R0",
+            reason="read only",
+        ),
+    )
+
+    class LocalTelegram:
+        def send_report(
+            self,
+            _text,
+        ):
+            pass
+
+    class Bridge(
+        orchestrator_risk.RiskAwareExecutionMixin
+    ):
+        def __init__(
+            self,
+        ):
+            self.config = {
+                "workspace_root": str(
+                    tmp_path
+                ),
+                "auto_run_low_risk": True,
+            }
+
+            self.command_execution_active = False
+            self.status = "idle"
+            self.current_step = ""
+            self.active_provider = "chatgpt"
+            self.telegram = LocalTelegram()
+
+        def emit_event(
+            self,
+            _event,
+        ):
+            pass
+
+        def _persist_runtime_state(
+            self,
+        ):
+            pass
+
+        def _format_result(
+            self,
+            *_args,
+            **_kwargs,
+        ):
+            return "report"
+
+        def _telegram_summary(
+            self,
+            *_args,
+            **_kwargs,
+        ):
+            return "summary"
+
+        def _send_result_to_chatgpt(
+            self,
+            _text,
+        ):
+            pass
+
+        @staticmethod
+        def provider_name(
+            value,
+        ):
+            return value
+
+    bridge = Bridge()
+
+    def fake_run(
+        *_args,
+        **_kwargs,
+    ):
+        observed.append(
+            bridge.command_execution_active
+        )
+
+        return CommandResult(
+            command="git status",
+            cwd=str(tmp_path),
+            exit_code=0,
+            duration_seconds=0.01,
+            stdout="",
+            stderr="",
+        )
+
+    monkeypatch.setattr(
+        orchestrator_risk,
+        "run_command",
+        fake_run,
+    )
+
+    bridge._run_command_and_continue(
+        contract_for(
+            "git status",
+            "Inspect repository",
+        ),
+        0,
+    )
+
+    assert observed == [
+        True
+    ]
+
+    assert (
+        bridge.command_execution_active
+        is False
+    )

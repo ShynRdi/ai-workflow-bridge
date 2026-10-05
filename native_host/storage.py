@@ -9,6 +9,7 @@ from typing import Any
 from checkpoint import (
     CHECKPOINT_STATUSES,
     validate_checkpoint_metadata,
+    validate_checkpoint_transition,
 )
 from config import DB_PATH, ensure_app_dir
 
@@ -253,24 +254,30 @@ class Store:
 
         return payload
 
-    def update_checkpoint_status(
+    def transition_checkpoint_status(
         self,
         checkpoint_id: str,
-        status: str,
+        *,
+        expected_status: str,
+        new_status: str,
     ) -> bool:
-        value = str(
-            status or ""
+        expected = str(
+            expected_status or ""
         ).strip()
 
-        if value not in CHECKPOINT_STATUSES:
-            raise ValueError(
-                f"Invalid checkpoint status: {value}"
-            )
+        target = str(
+            new_status or ""
+        ).strip()
+
+        validate_checkpoint_transition(
+            expected,
+            target,
+        )
 
         with self.lock:
             row = self.db.execute(
                 """
-                SELECT payload
+                SELECT status, payload
                 FROM checkpoints
                 WHERE checkpoint_id=?
                 """,
@@ -282,6 +289,13 @@ class Store:
             if row is None:
                 return False
 
+            current = str(
+                row["status"]
+            )
+
+            if current != expected:
+                return False
+
             try:
                 payload = json.loads(
                     row["payload"]
@@ -289,37 +303,91 @@ class Store:
             except (
                 TypeError,
                 json.JSONDecodeError,
+            ) as error:
+                raise ValueError(
+                    "Checkpoint payload is corrupted"
+                ) from error
+
+            if not isinstance(
+                payload,
+                dict,
             ):
-                payload = {}
+                raise ValueError(
+                    "Checkpoint payload is corrupted"
+                )
 
-            if not isinstance(payload, dict):
-                payload = {}
+            payload["status"] = target
 
-            payload["status"] = value
+            updated_at = now_iso()
 
-            self.db.execute(
+            cursor = self.db.execute(
                 """
                 UPDATE checkpoints
                 SET
                   status=?,
                   updated_at=?,
                   payload=?
-                WHERE checkpoint_id=?
+                WHERE
+                  checkpoint_id=?
+                  AND status=?
                 """,
                 (
-                    value,
-                    now_iso(),
+                    target,
+                    updated_at,
                     json.dumps(
                         payload,
                         ensure_ascii=False,
                     ),
                     str(checkpoint_id),
+                    expected,
                 ),
             )
 
             self.db.commit()
 
-        return True
+            return cursor.rowcount == 1
+
+    def update_checkpoint_status(
+        self,
+        checkpoint_id: str,
+        status: str,
+    ) -> bool:
+        target = str(
+            status or ""
+        ).strip()
+
+        if target not in CHECKPOINT_STATUSES:
+            raise ValueError(
+                f"Invalid checkpoint status: {target}"
+            )
+
+        with self.lock:
+            row = self.db.execute(
+                """
+                SELECT status
+                FROM checkpoints
+                WHERE checkpoint_id=?
+                """,
+                (
+                    str(checkpoint_id),
+                ),
+            ).fetchone()
+
+        if row is None:
+            return False
+
+        current = str(
+            row["status"]
+        )
+
+        if current == target:
+            return True
+
+        return self.transition_checkpoint_status(
+            checkpoint_id,
+            expected_status=current,
+            new_status=target,
+        )
 
     def list_checkpoints(
         self,

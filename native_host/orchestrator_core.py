@@ -44,6 +44,7 @@ class CoreMixin:
         self.budget.reset(self.active_provider)
         self.pending_send_timer: threading.Timer | None = None
         self.recovery_context: dict[str, Any] | None = None
+        self.command_execution_active = False
         self._restore_runtime_state()
 
     def _runtime_snapshot(self) -> dict[str, Any]:

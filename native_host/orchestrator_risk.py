@@ -189,6 +189,39 @@ class RiskAwareExecutionMixin:
         download_bundle: dict[str, Any] | None = None,
         approved_index: int | None = None,
     ) -> None:
+        if bool(
+            getattr(
+                self,
+                "command_execution_active",
+                False,
+            )
+        ):
+            raise RuntimeError(
+                "A command execution window is "
+                "already active"
+            )
+
+        self.command_execution_active = True
+
+        try:
+            return self._run_command_and_continue_impl(
+                contract,
+                index,
+                accumulated,
+                download_bundle,
+                approved_index,
+            )
+        finally:
+            self.command_execution_active = False
+
+    def _run_command_and_continue_impl(
+        self,
+        contract,
+        index: int,
+        accumulated: list[dict[str, Any]] | None = None,
+        download_bundle: dict[str, Any] | None = None,
+        approved_index: int | None = None,
+    ) -> None:
         accumulated = list(accumulated or [])
         workspace = str(self.config.get("workspace_root") or "")
         before = git_snapshot(workspace)
@@ -361,8 +394,6 @@ class RiskAwareExecutionMixin:
             # Explicit crash boundary: checkpoint creation
             # and checkpoint metadata persistence, when
             # required, must already be complete before the
-            # local process receives any opportunity to mutate.
-            # already describe an in-flight command before the
             # local process receives any opportunity to mutate.
             self._persist_runtime_state()
 

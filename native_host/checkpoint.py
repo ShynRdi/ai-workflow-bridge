@@ -12,8 +12,27 @@ CHECKPOINT_VERSION = 1
 CHECKPOINT_STATUSES = {
     "ready",
     "accepted",
+    "rolling_back",
     "rolled_back",
+    "rollback_failed",
     "invalid",
+}
+
+CHECKPOINT_TRANSITIONS = {
+    "ready": {
+        "accepted",
+        "rolling_back",
+        "invalid",
+    },
+    "rolling_back": {
+        "rolled_back",
+        "rollback_failed",
+        "invalid",
+    },
+    "accepted": set(),
+    "rolled_back": set(),
+    "rollback_failed": set(),
+    "invalid": set(),
 }
 
 FORBIDDEN_EXECUTION_KEYS = {
@@ -71,6 +90,39 @@ def _assert_no_executable_state(
                 item,
                 path=f"{path}[{index}]",
             )
+
+
+def validate_checkpoint_transition(
+    current_status: str,
+    new_status: str,
+) -> None:
+    current = str(
+        current_status or ""
+    ).strip()
+
+    target = str(
+        new_status or ""
+    ).strip()
+
+    if current not in CHECKPOINT_STATUSES:
+        raise ValueError(
+            f"Invalid checkpoint status: {current}"
+        )
+
+    if target not in CHECKPOINT_STATUSES:
+        raise ValueError(
+            f"Invalid checkpoint status: {target}"
+        )
+
+    allowed = CHECKPOINT_TRANSITIONS[
+        current
+    ]
+
+    if target not in allowed:
+        raise ValueError(
+            "Invalid checkpoint transition: "
+            f"{current} -> {target}"
+        )
 
 
 def validate_checkpoint_metadata(
