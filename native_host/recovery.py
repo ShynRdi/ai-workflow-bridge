@@ -50,6 +50,7 @@ def build_runtime_snapshot(
     active_provider: str,
     provider_guard: bool,
     pending: dict[str, dict[str, Any]] | None = None,
+    budget: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     approvals = []
 
@@ -59,7 +60,7 @@ def build_runtime_snapshot(
         approvals.append(sanitize_pending_approval(item))
 
     return {
-        "version": 1,
+        "version": 2,
         "lifecycle": str(lifecycle or "setup"),
         "status": str(status or "idle"),
         "current_step": str(current_step or ""),
@@ -67,6 +68,7 @@ def build_runtime_snapshot(
         "active_provider": str(active_provider or "chatgpt"),
         "provider_guard": bool(provider_guard),
         "pending_approvals": approvals,
+        "budget": dict(budget or {}),
     }
 
 

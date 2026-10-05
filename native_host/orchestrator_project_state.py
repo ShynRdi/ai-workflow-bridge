@@ -4,6 +4,10 @@ from pathlib import Path
 from typing import Any
 
 from config import save_config
+from orchestrator_response import (
+    PROJECT_DONE_MARKER,
+    has_exact_trailing_marker,
+)
 from project_state import (
     advance_project_state,
     apply_course_change,
@@ -133,47 +137,243 @@ PROJECT-LOCAL ROADMAP AUTHORITY
 - Propose roadmap transitions only through the contract phase/stage fields. The native host validates and persists accepted transitions.
 '''
 
-    def process_assistant_response(self, payload: dict[str, Any]) -> None:
-        prior_lifecycle = getattr(self, "lifecycle", "")
-        super().process_assistant_response(payload)
+    def process_assistant_response(
+        self,
+        payload: dict[str, Any],
+    ) -> None:
+        prior_lifecycle = getattr(
+            self,
+            "lifecycle",
+            "",
+        )
+
         workspace = self._workspace_root()
-        if not workspace or not Path(workspace).expanduser().is_dir():
-            return
-        try:
-            if prior_lifecycle == "planning" and self.lifecycle == "ready_to_arm" and self.config.get("roadmap"):
-                existing = load_project_state(workspace)
-                if existing is None:
-                    summary = initialize_project_state(
-                        workspace,
-                        list(self.config.get("roadmap") or []),
-                        str(self.config.get("phase") or ""),
-                        str(self.config.get("stage") or ""),
-                        reason="approved planning response",
+
+        workspace_ready = bool(
+            workspace
+            and Path(workspace).expanduser().is_dir()
+        )
+
+        text = str(
+            payload.get("text") or ""
+        )
+
+        # ----------------------------------------------------
+        # Commit native-owned canonical project state BEFORE
+        # publishing terminal runtime transitions.
+        #
+        # If the process crashes after this commit but before
+        # ResponseMixin persists ready_to_arm / complete, the
+        # previous runtime state remains in-flight and startup
+        # therefore fails closed into RECOVERY_REQUIRED.
+        # ----------------------------------------------------
+
+        if workspace_ready:
+            try:
+                if (
+                    prior_lifecycle == "planning"
+                    and has_exact_trailing_marker(
+                        text,
+                        "READY_TO_ARM",
                     )
-                else:
-                    summary = project_state_summary(workspace, existing)
-                current = summary.get("current") or {}
-                self.config = save_config({
-                    "roadmap": list((load_project_state(workspace) or {}).get("roadmap") or self.config.get("roadmap") or []),
-                    "phase": str(current.get("phase") or ""),
-                    "stage": str(current.get("stage") or ""),
+                ):
+                    roadmap = None
+
+                    try:
+                        roadmap = self.extract_roadmap(
+                            text
+                        )
+                    except Exception:
+                        # Let ResponseMixin report malformed
+                        # planning output normally.
+                        roadmap = None
+
+                    if roadmap:
+                        existing = load_project_state(
+                            workspace
+                        )
+
+                        if existing is None:
+                            initialize_project_state(
+                                workspace,
+                                list(roadmap),
+                                str(
+                                    self.config.get(
+                                        "phase"
+                                    )
+                                    or ""
+                                ),
+                                str(
+                                    self.config.get(
+                                        "stage"
+                                    )
+                                    or ""
+                                ),
+                                reason=(
+                                    "approved planning "
+                                    "response"
+                                ),
+                            )
+
+                elif (
+                    prior_lifecycle == "finishing"
+                    and has_exact_trailing_marker(
+                        text,
+                        PROJECT_DONE_MARKER,
+                    )
+                ):
+                    existing = load_project_state(
+                        workspace
+                    )
+
+                    if existing is None:
+                        raise RuntimeError(
+                            "Project-local roadmap state "
+                            "is not initialized"
+                        )
+
+                    if (
+                        str(
+                            existing.get("status")
+                            or "active"
+                        )
+                        != "complete"
+                    ):
+                        complete_project_state(
+                            workspace
+                        )
+
+            except Exception as error:
+                self.paused = True
+                self.status = "project_state_error"
+                self.current_step = (
+                    "Project-local roadmap state "
+                    "update failed"
+                )
+
+                self.emit_event({
+                    "kind": "error",
+                    "text": (
+                        "Project-local roadmap state could "
+                        f"not be committed before the runtime "
+                        f"transition: {error}. Automation "
+                        "paused to avoid state drift."
+                    ),
                 })
+
+                return
+
+        # Runtime ready/complete may be persisted only after
+        # the canonical project-state transition above.
+        super().process_assistant_response(
+            payload
+        )
+
+        if not workspace_ready:
+            return
+
+        try:
+            if (
+                prior_lifecycle == "planning"
+                and self.lifecycle == "ready_to_arm"
+                and self.config.get("roadmap")
+            ):
+                state = load_project_state(
+                    workspace
+                )
+
+                if state is None:
+                    raise RuntimeError(
+                        "Runtime reached ready_to_arm "
+                        "before the project-local roadmap "
+                        "was committed"
+                    )
+
+                summary = project_state_summary(
+                    workspace,
+                    state,
+                )
+
+                current = (
+                    summary.get("current")
+                    or {}
+                )
+
+                self.config = save_config({
+                    "roadmap": list(
+                        state.get("roadmap")
+                        or self.config.get(
+                            "roadmap"
+                        )
+                        or []
+                    ),
+                    "phase": str(
+                        current.get("phase")
+                        or ""
+                    ),
+                    "stage": str(
+                        current.get("stage")
+                        or ""
+                    ),
+                })
+
                 self.emit_event({
                     "kind": "info",
                     "badge": "MAP",
-                    "text": f"Project-local roadmap initialized at {summary.get('roadmap_path')}",
+                    "text": (
+                        "Project-local roadmap "
+                        "initialized at "
+                        f"{summary.get('roadmap_path')}"
+                    ),
                 })
-                self.emit({"kind": "state", "state": self.state()})
-            elif prior_lifecycle == "finishing" and self.lifecycle == "complete":
-                complete_project_state(workspace)
-                self.emit({"kind": "state", "state": self.state()})
+
+                self.emit({
+                    "kind": "state",
+                    "state": self.state(),
+                })
+
+            elif (
+                prior_lifecycle == "finishing"
+                and self.lifecycle == "complete"
+            ):
+                state = load_project_state(
+                    workspace
+                )
+
+                if (
+                    state is None
+                    or str(
+                        state.get("status")
+                        or ""
+                    )
+                    != "complete"
+                ):
+                    raise RuntimeError(
+                        "Runtime reached complete before "
+                        "project-local completion was committed"
+                    )
+
+                # Do NOT call complete_project_state again.
+                # It was committed before runtime completion.
+                self.emit({
+                    "kind": "state",
+                    "state": self.state(),
+                })
+
         except Exception as error:
             self.paused = True
             self.status = "project_state_error"
-            self.current_step = "Project-local roadmap state update failed"
+            self.current_step = (
+                "Project-local roadmap state update failed"
+            )
+
             self.emit_event({
                 "kind": "error",
-                "text": f"Project-local roadmap state could not be updated: {error}. Automation paused to avoid state drift.",
+                "text": (
+                    "Project-local roadmap state could "
+                    f"not be reconciled: {error}. "
+                    "Automation paused to avoid state drift."
+                ),
             })
 
     def _roadmap_positions(self) -> list[tuple[str, str]]:

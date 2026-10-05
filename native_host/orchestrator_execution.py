@@ -28,6 +28,9 @@ class ExecutionMixin:
     def _request_downloads(self, candidates: list[dict[str,Any]], tab_id: Any) -> list[dict[str,Any]]:
         request_id=uuid.uuid4().hex; event=threading.Event(); self.download_waiters[request_id]={"event":event,"response":None}
         try:
+            # Browser download is an external side effect. Persist
+            # the authoritative runtime state before requesting it.
+            self._persist_runtime_state()
             self.emit({"kind":"download_request","request_id":request_id,"tab_id":tab_id,"candidates":candidates})
             if not event.wait(timeout=120): raise TimeoutError("Browser attachment download timed out")
             response=self.download_waiters[request_id].get("response") or {}

@@ -486,3 +486,173 @@ def test_prepare_recovery_rejects_provider_switch():
     assert bridge.active_provider == "chatgpt"
     assert bridge.recovery_context is not None
     assert sent == []
+
+
+def test_run_budget_round_trip_preserves_turns():
+    from safety import RunBudget
+
+    first = RunBudget()
+    first.reset("chatgpt")
+    first.record_send()
+    first.record_send()
+
+    payload = first.export_state()
+
+    second = RunBudget()
+
+    assert second.restore_state(payload) is True
+
+    public = second.public({
+        "max_turns_per_session": 25,
+        "max_turns_per_hour": 20,
+        "max_runtime_minutes": 90,
+    })
+
+    assert public["provider_id"] == "chatgpt"
+    assert public["session_turns"] == 2
+    assert public["turns_last_hour"] == 2
+
+
+def test_provider_guard_survives_restart_fail_closed():
+    from orchestrator import Orchestrator
+    from safety import RunBudget
+
+    budget = RunBudget()
+    budget.reset("chatgpt")
+    budget.block("provider safety signal")
+
+    bridge = Orchestrator.__new__(Orchestrator)
+
+    bridge.store = FakeStore(
+        build_runtime_snapshot(
+            lifecycle="paused",
+            status="provider_guard",
+            current_step="Provider guard active",
+            paused=True,
+            active_provider="chatgpt",
+            provider_guard=True,
+            budget=budget.export_state(),
+        )
+    )
+
+    bridge.active_provider = "chatgpt"
+    bridge.provider_guard = False
+    bridge.paused = False
+    bridge.lifecycle = "setup"
+    bridge.status = "idle"
+    bridge.current_step = ""
+    bridge.pending = {}
+    bridge.budget = RunBudget()
+    bridge.recovery_context = None
+
+    bridge._restore_runtime_state()
+
+    assert bridge.provider_guard is True
+    assert bridge.paused is True
+    assert bridge.lifecycle == "paused"
+    assert bridge.status == "provider_guard"
+
+    decision = bridge.budget.decision({})
+
+    assert decision["allowed"] is False
+    assert decision["hard"] is True
+
+
+def test_budget_exhausted_state_survives_restart():
+    from orchestrator import Orchestrator
+    from safety import RunBudget
+
+    budget = RunBudget()
+    budget.reset("chatgpt")
+    budget.record_send()
+    budget.record_send()
+
+    bridge = Orchestrator.__new__(Orchestrator)
+
+    bridge.store = FakeStore(
+        build_runtime_snapshot(
+            lifecycle="budget_exhausted",
+            status="budget_exhausted",
+            current_step="AI-turn budget exhausted",
+            paused=True,
+            active_provider="chatgpt",
+            provider_guard=False,
+            budget=budget.export_state(),
+        )
+    )
+
+    bridge.active_provider = "chatgpt"
+    bridge.provider_guard = False
+    bridge.paused = False
+    bridge.lifecycle = "setup"
+    bridge.status = "idle"
+    bridge.current_step = ""
+    bridge.pending = {}
+    bridge.budget = RunBudget()
+    bridge.recovery_context = None
+
+    bridge._restore_runtime_state()
+
+    assert bridge.paused is True
+    assert bridge.lifecycle == "budget_exhausted"
+    assert bridge.status == "budget_exhausted"
+    assert bridge.budget.public({})["session_turns"] == 2
+
+
+def test_user_paused_state_survives_restart():
+    from orchestrator import Orchestrator
+    from safety import RunBudget
+
+    bridge = Orchestrator.__new__(Orchestrator)
+
+    bridge.store = FakeStore(
+        build_runtime_snapshot(
+            lifecycle="paused",
+            status="paused",
+            current_step="Workflow paused by user",
+            paused=True,
+            active_provider="claude",
+            provider_guard=False,
+        )
+    )
+
+    bridge.active_provider = "chatgpt"
+    bridge.provider_guard = False
+    bridge.paused = False
+    bridge.lifecycle = "setup"
+    bridge.status = "idle"
+    bridge.current_step = ""
+    bridge.pending = {}
+    bridge.budget = RunBudget()
+    bridge.recovery_context = None
+
+    bridge._restore_runtime_state()
+
+    assert bridge.active_provider == "claude"
+    assert bridge.paused is True
+    assert bridge.lifecycle == "paused"
+    assert bridge.status == "paused"
+
+
+def test_runtime_snapshot_persists_budget_state():
+    from orchestrator import Orchestrator
+    from safety import RunBudget
+
+    bridge = Orchestrator.__new__(Orchestrator)
+
+    bridge.lifecycle = "running"
+    bridge.status = "waiting_llm"
+    bridge.current_step = "Waiting"
+    bridge.paused = False
+    bridge.active_provider = "chatgpt"
+    bridge.provider_guard = False
+    bridge.pending = {}
+    bridge.budget = RunBudget()
+
+    bridge.budget.record_send()
+
+    snapshot = bridge._runtime_snapshot()
+
+    assert snapshot["version"] == 2
+    assert snapshot["budget"]["provider_id"] == "chatgpt"
+    assert len(snapshot["budget"]["turn_timestamps"]) == 1

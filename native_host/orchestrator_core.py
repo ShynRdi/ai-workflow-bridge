@@ -55,6 +55,7 @@ class CoreMixin:
             active_provider=self.active_provider,
             provider_guard=self.provider_guard,
             pending=self.pending,
+            budget=self.budget.export_state(),
         )
 
     def _persist_runtime_state(self) -> None:
@@ -68,32 +69,85 @@ class CoreMixin:
             RUNTIME_STATE_KEY,
         )
 
-        if not requires_recovery(snapshot):
+        if not isinstance(snapshot, dict):
             return
 
-        assert snapshot is not None
-
-        self.recovery_context = recovery_summary(snapshot)
         self.active_provider = str(
             snapshot.get("active_provider")
             or self.active_provider
         )
+
         self.provider_guard = bool(
             snapshot.get("provider_guard")
         )
 
-        self.paused = True
-        self.lifecycle = "recovery_required"
-        self.status = "recovery_required"
-        self.current_step = (
-            "Interrupted workflow requires recovery review"
+        restored_budget = self.budget.restore_state(
+            snapshot.get("budget")
         )
 
-        self.budget.set_provider(self.active_provider)
+        if not restored_budget:
+            self.budget.set_provider(
+                self.active_provider
+            )
+        else:
+            # A mismatched persisted budget must never be
+            # reused for another provider.
+            self.budget.set_provider(
+                self.active_provider
+            )
 
         if self.provider_guard:
+            # Provider safety guards are deliberately manual
+            # across restarts.
             self.budget.block(
                 "Recovered provider safety guard"
+            )
+
+        if requires_recovery(snapshot):
+            self.recovery_context = recovery_summary(
+                snapshot
+            )
+
+            self.paused = True
+            self.lifecycle = "recovery_required"
+            self.status = "recovery_required"
+            self.current_step = (
+                "Interrupted workflow requires recovery review"
+            )
+
+            return
+
+        # Safe/passive states are restored for continuity,
+        # but no executable cursor, prompt, timer, approval
+        # continuation, or command is restored.
+        self.paused = bool(
+            snapshot.get("paused")
+        )
+
+        self.lifecycle = str(
+            snapshot.get("lifecycle")
+            or "setup"
+        )
+
+        self.status = str(
+            snapshot.get("status")
+            or "idle"
+        )
+
+        self.current_step = str(
+            snapshot.get("current_step")
+            or ""
+        )
+
+        self.recovery_context = None
+
+        if self.provider_guard:
+            self.paused = True
+            self.lifecycle = "paused"
+            self.status = "provider_guard"
+            self.current_step = (
+                "Provider account-safety guard remains active "
+                "after restart"
             )
 
     def resolve_recovery(
