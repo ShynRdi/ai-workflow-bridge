@@ -297,6 +297,46 @@ class CheckpointControlMixin:
                 )
                 return False
 
+            command = dict(
+                checkpoint.get(
+                    "command"
+                )
+                or {}
+            )
+
+            self.checkpoint_recovery_context = {
+                "checkpoint_id": checkpoint_id,
+                "status": "rolling_back",
+                "rollback_scope": str(
+                    snapshot.get(
+                        "rollback_scope"
+                    )
+                    or "workspace_files_only"
+                ),
+                "command_summary": str(
+                    command.get(
+                        "summary"
+                    )
+                    or ""
+                ),
+                "risk_level": str(
+                    command.get(
+                        "risk_level"
+                    )
+                    or ""
+                ),
+                "uncertain": True,
+                "note": (
+                    "Rollback was claimed but its "
+                    "completion is not yet durable."
+                ),
+            }
+
+            # Second crash boundary: the checkpoint identity
+            # and rolling_back state are persisted before any
+            # workspace restoration begins.
+            self._persist_runtime_state()
+
             try:
                 report = (
                     restore_workspace_snapshot(
@@ -339,6 +379,20 @@ class CheckpointControlMixin:
                     "recovery review"
                 )
                 self.paused = True
+
+                self.checkpoint_recovery_context = {
+                    **dict(
+                        self.checkpoint_recovery_context
+                        or {}
+                    ),
+                    "checkpoint_id": checkpoint_id,
+                    "status": "rollback_failed",
+                    "uncertain": True,
+                    "note": (
+                        "Rollback failed or its completion "
+                        "could not be persisted safely."
+                    ),
+                }
 
                 failed_snapshot = (
                     self._runtime_snapshot()
@@ -385,6 +439,8 @@ class CheckpointControlMixin:
                 })
 
                 return False
+
+            self.checkpoint_recovery_context = None
 
             self.paused = True
             self.lifecycle = "paused"

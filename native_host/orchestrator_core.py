@@ -22,6 +22,7 @@ from recovery import (
     build_runtime_snapshot,
     recovery_summary,
     requires_recovery,
+    sanitize_checkpoint_recovery,
 )
 
 class CoreMixin:
@@ -44,6 +45,7 @@ class CoreMixin:
         self.budget.reset(self.active_provider)
         self.pending_send_timer: threading.Timer | None = None
         self.recovery_context: dict[str, Any] | None = None
+        self.checkpoint_recovery_context: dict[str, Any] | None = None
         self.command_execution_active = False
         self._restore_runtime_state()
 
@@ -57,6 +59,13 @@ class CoreMixin:
             provider_guard=self.provider_guard,
             pending=self.pending,
             budget=self.budget.export_state(),
+            checkpoint_recovery=(
+                getattr(
+                    self,
+                    "checkpoint_recovery_context",
+                    None,
+                )
+            ),
         )
 
     def _persist_runtime_state(self) -> None:
@@ -65,13 +74,345 @@ class CoreMixin:
             self._runtime_snapshot(),
         )
 
+    def _checkpoint_recovery_from_store(
+        self,
+    ) -> dict[str, Any] | None:
+        list_checkpoints = getattr(
+            self.store,
+            "list_checkpoints",
+            None,
+        )
+
+        if not callable(
+            list_checkpoints
+        ):
+            return None
+
+        raw_workspace = str(
+            self.config.get(
+                "workspace_root"
+            )
+            or ""
+        ).strip()
+
+        if not raw_workspace:
+            return None
+
+        workspace = str(
+            Path(
+                raw_workspace
+            ).expanduser().resolve()
+        )
+
+        items = list_checkpoints(
+            workspace_root=workspace,
+            status="rolling_back",
+            limit=1,
+        )
+
+        if not items:
+            return None
+
+        checkpoint = dict(
+            items[0]
+        )
+
+        command = dict(
+            checkpoint.get(
+                "command"
+            )
+            or {}
+        )
+
+        snapshot = dict(
+            checkpoint.get(
+                "snapshot"
+            )
+            or {}
+        )
+
+        return sanitize_checkpoint_recovery({
+            "checkpoint_id": checkpoint.get(
+                "checkpoint_id"
+            ),
+            "status": checkpoint.get(
+                "status"
+            )
+            or "rolling_back",
+            "rollback_scope": snapshot.get(
+                "rollback_scope"
+            )
+            or "workspace_files_only",
+            "command_summary": command.get(
+                "summary"
+            ),
+            "risk_level": command.get(
+                "risk_level"
+            ),
+            "uncertain": True,
+            "note": (
+                "A rollback was interrupted. "
+                "The Bridge cannot know whether "
+                "workspace restoration had started "
+                "or completed, so it will not retry "
+                "the rollback automatically."
+            ),
+        })
+
+    def _reconcile_checkpoint_recovery(
+        self,
+        value: dict[str, Any] | None,
+    ) -> dict[str, Any] | None:
+        if not isinstance(
+            value,
+            dict,
+        ):
+            return None
+
+        context = (
+            sanitize_checkpoint_recovery(
+                value
+            )
+        )
+
+        checkpoint_id = str(
+            context.get(
+                "checkpoint_id"
+            )
+            or ""
+        )
+
+        get_checkpoint = getattr(
+            self.store,
+            "get_checkpoint",
+            None,
+        )
+
+        if (
+            not checkpoint_id
+            or not callable(
+                get_checkpoint
+            )
+        ):
+            return context
+
+        checkpoint = get_checkpoint(
+            checkpoint_id
+        )
+
+        if not isinstance(
+            checkpoint,
+            dict,
+        ):
+            return context
+
+        current_status = str(
+            checkpoint.get(
+                "status"
+            )
+            or context.get(
+                "status"
+            )
+            or ""
+        )
+
+        context[
+            "status"
+        ] = current_status
+
+        context[
+            "uncertain"
+        ] = (
+            current_status
+            in {
+                "rolling_back",
+                "rollback_failed",
+            }
+        )
+
+        return context
+
+    def _resolve_checkpoint_recovery(
+        self,
+    ) -> bool:
+        value = getattr(
+            self,
+            "checkpoint_recovery_context",
+            None,
+        )
+
+        if not isinstance(
+            value,
+            dict,
+        ):
+            recovery = getattr(
+                self,
+                "recovery_context",
+                None,
+            )
+
+            if isinstance(
+                recovery,
+                dict,
+            ):
+                candidate = recovery.get(
+                    "checkpoint_recovery"
+                )
+
+                if isinstance(
+                    candidate,
+                    dict,
+                ):
+                    value = candidate
+
+        if not isinstance(
+            value,
+            dict,
+        ):
+            return True
+
+        context = (
+            self._reconcile_checkpoint_recovery(
+                value
+            )
+            or {}
+        )
+
+        checkpoint_id = str(
+            context.get(
+                "checkpoint_id"
+            )
+            or ""
+        )
+
+        status = str(
+            context.get(
+                "status"
+            )
+            or ""
+        )
+
+        if (
+            not checkpoint_id
+            or status
+            != "rolling_back"
+        ):
+            return True
+
+        transition = getattr(
+            self.store,
+            "transition_checkpoint_status",
+            None,
+        )
+
+        if not callable(
+            transition
+        ):
+            return False
+
+        if transition(
+            checkpoint_id,
+            expected_status="rolling_back",
+            new_status="invalid",
+        ):
+            return True
+
+        # Defensive reconciliation: another durable terminal
+        # state may have won after the runtime snapshot was
+        # written but before the process crashed.
+        reconciled = (
+            self._reconcile_checkpoint_recovery(
+                context
+            )
+            or {}
+        )
+
+        return str(
+            reconciled.get(
+                "status"
+            )
+            or ""
+        ) in {
+            "invalid",
+            "rolled_back",
+            "rollback_failed",
+        }
+
+
     def _restore_runtime_state(self) -> None:
+        # Older test doubles and recovered objects may have
+        # been constructed without the checkpoint-aware
+        # attribute. Missing context means no checkpoint
+        # recovery is currently known.
+        self.checkpoint_recovery_context = getattr(
+            self,
+            "checkpoint_recovery_context",
+            None,
+        )
+
         snapshot = self.store.get_runtime_state(
             RUNTIME_STATE_KEY,
         )
 
-        if not isinstance(snapshot, dict):
-            return
+        store_checkpoint_recovery = (
+            self._checkpoint_recovery_from_store()
+        )
+
+        if not isinstance(
+            snapshot,
+            dict,
+        ):
+            if (
+                store_checkpoint_recovery
+                is None
+            ):
+                return
+
+            snapshot = build_runtime_snapshot(
+                lifecycle="recovering",
+                status="recovering",
+                current_step=(
+                    "Interrupted checkpoint rollback"
+                ),
+                paused=True,
+                active_provider=(
+                    self.active_provider
+                ),
+                provider_guard=(
+                    self.provider_guard
+                ),
+                pending={},
+                budget=self.budget.export_state(),
+                checkpoint_recovery=(
+                    store_checkpoint_recovery
+                ),
+            )
+
+        snapshot_checkpoint_recovery = (
+            snapshot.get(
+                "checkpoint_recovery"
+            )
+        )
+
+        if isinstance(
+            snapshot_checkpoint_recovery,
+            dict,
+        ):
+            self.checkpoint_recovery_context = (
+                self._reconcile_checkpoint_recovery(
+                    snapshot_checkpoint_recovery
+                )
+            )
+
+        if (
+            store_checkpoint_recovery
+            is not None
+        ):
+            self.checkpoint_recovery_context = (
+                self._reconcile_checkpoint_recovery(
+                    store_checkpoint_recovery
+                )
+            )
 
         self.active_provider = str(
             snapshot.get("active_provider")
@@ -104,17 +445,46 @@ class CoreMixin:
                 "Recovered provider safety guard"
             )
 
-        if requires_recovery(snapshot):
-            self.recovery_context = recovery_summary(
+        if (
+            requires_recovery(
                 snapshot
             )
+            or self.checkpoint_recovery_context
+            is not None
+        ):
+            self.recovery_context = (
+                recovery_summary(
+                    snapshot
+                )
+            )
+
+            if (
+                self.checkpoint_recovery_context
+                is not None
+            ):
+                self.recovery_context[
+                    "checkpoint_recovery"
+                ] = dict(
+                    self.checkpoint_recovery_context
+                )
 
             self.paused = True
             self.lifecycle = "recovery_required"
             self.status = "recovery_required"
-            self.current_step = (
-                "Interrupted workflow requires recovery review"
-            )
+
+            if (
+                self.checkpoint_recovery_context
+                is not None
+            ):
+                self.current_step = (
+                    "Interrupted checkpoint rollback "
+                    "requires recovery review"
+                )
+            else:
+                self.current_step = (
+                    "Interrupted workflow requires "
+                    "recovery review"
+                )
 
             return
 
@@ -170,10 +540,28 @@ class CoreMixin:
                 getattr(self, "recovery_context", None) or {}
             )
 
+            if not self._resolve_checkpoint_recovery():
+                self.emit_event({
+                    "kind": "error",
+                    "badge": "RECOVER!",
+                    "status": "recovery_required",
+                    "text": (
+                        "Checkpoint recovery state could "
+                        "not be reconciled safely. "
+                        "The workflow remains stopped."
+                    ),
+                })
+
+                # The recovery request was handled, but the
+                # fail-closed recovery state intentionally
+                # remains active.
+                return True
+
             self.store.expire_pending_approvals()
             self.pending.clear()
             self.no_contract_recoveries = 0
             self.recovery_context = None
+            self.checkpoint_recovery_context = None
 
             if value == "prepare":
                 if self.provider_guard:
