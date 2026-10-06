@@ -67,6 +67,178 @@ class CheckpointControlMixin:
             "text": str(text),
         })
 
+    def public_checkpoint_state(
+        self,
+    ) -> dict[str, Any]:
+        try:
+            workspace = (
+                self._checkpoint_workspace()
+            )
+
+            ready = (
+                self.store.list_checkpoints(
+                    workspace_root=workspace,
+                    status="ready",
+                    limit=1,
+                )
+            )
+
+            if ready:
+                checkpoint = ready[0]
+            else:
+                latest = (
+                    self.store.list_checkpoints(
+                        workspace_root=workspace,
+                        limit=1,
+                    )
+                )
+
+                if not latest:
+                    return {
+                        "available": False,
+                    }
+
+                checkpoint = latest[0]
+
+            command = dict(
+                checkpoint.get(
+                    "command"
+                )
+                or {}
+            )
+
+            snapshot = dict(
+                checkpoint.get(
+                    "snapshot"
+                )
+                or {}
+            )
+
+            limitations = (
+                snapshot.get(
+                    "rollback_limitations"
+                )
+            )
+
+            if not isinstance(
+                limitations,
+                list,
+            ):
+                limitations = []
+
+            status = str(
+                checkpoint.get(
+                    "status"
+                )
+                or ""
+            )
+
+            execution_active = bool(
+                getattr(
+                    self,
+                    "command_execution_active",
+                    False,
+                )
+            )
+
+            recovery_required = (
+                str(
+                    getattr(
+                        self,
+                        "lifecycle",
+                        "",
+                    )
+                )
+                == "recovery_required"
+            )
+
+            paused = bool(
+                getattr(
+                    self,
+                    "paused",
+                    False,
+                )
+            )
+
+            return {
+                "available": True,
+                "checkpoint_id": str(
+                    checkpoint.get(
+                        "checkpoint_id"
+                    )
+                    or ""
+                ),
+                "created_at": str(
+                    checkpoint.get(
+                        "created_at"
+                    )
+                    or ""
+                ),
+                "status": status,
+                "command_summary": str(
+                    command.get(
+                        "summary"
+                    )
+                    or ""
+                ),
+                "risk_level": str(
+                    command.get(
+                        "risk_level"
+                    )
+                    or ""
+                ),
+                "rollback_scope": str(
+                    snapshot.get(
+                        "rollback_scope"
+                    )
+                    or "workspace_files_only"
+                ),
+                "file_count": int(
+                    snapshot.get(
+                        "file_count"
+                    )
+                    or 0
+                ),
+                "total_bytes": int(
+                    snapshot.get(
+                        "total_bytes"
+                    )
+                    or 0
+                ),
+                "limitations": [
+                    str(item)
+                    for item in limitations
+                    if str(item).strip()
+                ],
+                "can_accept": (
+                    status == "ready"
+                    and not execution_active
+                    and not recovery_required
+                ),
+                "can_rollback": (
+                    status == "ready"
+                    and paused
+                    and not execution_active
+                    and not recovery_required
+                ),
+                "rollback_requires_pause": (
+                    status == "ready"
+                    and not paused
+                ),
+                "execution_active": (
+                    execution_active
+                ),
+            }
+
+        except Exception as error:
+            return {
+                "available": False,
+                "error": redact_text(
+                    str(error)
+                ),
+            }
+
+
     def accept_latest_checkpoint(
         self,
     ) -> bool:

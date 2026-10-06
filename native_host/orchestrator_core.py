@@ -631,6 +631,26 @@ class CoreMixin:
         self.emit(event)
 
     def state(self) -> dict[str, Any]:
+        checkpoint_state = {
+            "available": False,
+        }
+
+        provider = getattr(
+            self,
+            "public_checkpoint_state",
+            None,
+        )
+
+        if callable(provider):
+            try:
+                checkpoint_state = (
+                    provider()
+                )
+            except Exception:
+                checkpoint_state = {
+                    "available": False,
+                }
+
         return {
             "paused": self.paused,
             "status": self.status,
@@ -643,6 +663,7 @@ class CoreMixin:
                 self.active_provider
             ),
             "pending_approvals": list(self.pending),
+            "checkpoint": checkpoint_state,
             "recovery": getattr(
                 self,
                 "recovery_context",

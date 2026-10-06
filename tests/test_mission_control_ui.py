@@ -79,3 +79,274 @@ def test_recovery_ui_does_not_send_llm_prompt_directly():
     assert "send_text" not in block
     assert "SEND_TO_LLM" not in block
     assert 'command("arm")' not in block
+
+
+def test_checkpoint_panel_exposes_scope_and_explicit_controls():
+    html = (
+        EXT /
+        "sidepanel.html"
+    ).read_text(
+        encoding="utf-8"
+    )
+
+    panel = (
+        EXT /
+        "sidepanel.js"
+    ).read_text(
+        encoding="utf-8"
+    )
+
+    for element_id in [
+        "checkpointPanel",
+        "checkpointStatus",
+        "checkpointSummary",
+        "checkpointRisk",
+        "checkpointScope",
+        "checkpointFiles",
+        "checkpointBytes",
+        "checkpointLimitations",
+        "acceptCheckpoint",
+        "rollbackCheckpoint",
+    ]:
+        assert (
+            f'id="{element_id}"'
+            in html
+        )
+
+    assert (
+        "renderCheckpoint(state)"
+        in panel
+    )
+
+    assert (
+        'command("checkpoint_accept")'
+        in panel
+        or (
+            '"checkpoint_accept"'
+            in panel
+        )
+    )
+
+    assert (
+        '"checkpoint_rollback"'
+        in panel
+    )
+
+    assert (
+        "globalThis.confirm("
+        in panel
+    )
+
+
+def test_checkpoint_ui_states_rollback_limitations():
+    html = (
+        EXT /
+        "sidepanel.html"
+    ).read_text(
+        encoding="utf-8"
+    )
+
+    panel = (
+        EXT /
+        "sidepanel.js"
+    ).read_text(
+        encoding="utf-8"
+    )
+
+    combined = (
+        html +
+        panel
+    ).lower()
+
+    assert (
+        "git history"
+        in combined
+        or "git metadata"
+        in combined
+    )
+
+    assert (
+        "remote"
+        in combined
+    )
+
+    assert (
+        "database"
+        in combined
+    )
+
+    assert (
+        "system"
+        in combined
+    )
+
+    assert (
+        ".ai-workflow"
+        in combined
+    )
+
+
+def test_recovery_ui_surfaces_uncertain_checkpoint_state():
+    html = (
+        EXT /
+        "sidepanel.html"
+    ).read_text(
+        encoding="utf-8"
+    )
+
+    panel = (
+        EXT /
+        "sidepanel.js"
+    ).read_text(
+        encoding="utf-8"
+    )
+
+    assert (
+        'id="recoveryCheckpointBlock"'
+        in html
+    )
+
+    assert (
+        'id="recoveryCheckpointStatus"'
+        in html
+    )
+
+    assert (
+        'id="recoveryCheckpointId"'
+        in html
+    )
+
+    assert (
+        "recovery.checkpoint_recovery"
+        in panel
+    )
+
+    assert (
+        "will not automatically retry"
+        in html
+    )
+
+
+def test_checkpoint_buttons_follow_authoritative_native_capabilities():
+    panel = (
+        EXT /
+        "sidepanel.js"
+    ).read_text(
+        encoding="utf-8"
+    )
+
+    assert (
+        'checkpoint.can_accept !== true'
+        in panel
+    )
+
+    assert (
+        'checkpoint.can_rollback !== true'
+        in panel
+    )
+
+    assert (
+        '$("acceptCheckpoint").disabled ='
+        in panel
+    )
+
+    assert (
+        '$("rollbackCheckpoint").disabled ='
+        in panel
+    )
+
+    assert (
+        "checkpoint.can_accept !== true"
+        in panel
+    )
+
+    assert (
+        "checkpoint.can_rollback !== true"
+        in panel
+    )
+
+
+def test_checkpoint_state_refreshes_after_execution_or_pause_boundary():
+    panel = (
+        EXT /
+        "sidepanel.js"
+    ).read_text(
+        encoding="utf-8"
+    )
+
+    assert (
+        '"waiting_llm"'
+        in panel
+    )
+
+    assert (
+        '"paused"'
+        in panel
+    )
+
+    assert (
+        'command("get_state")'
+        in panel
+    )
+
+
+def test_checkpoint_confirmation_never_claims_full_transaction():
+    panel = (
+        EXT /
+        "sidepanel.js"
+    ).read_text(
+        encoding="utf-8"
+    )
+
+    start = panel.index(
+        '$("rollbackCheckpoint").addEventListener'
+    )
+
+    end = panel.index(
+        '$("planProject").addEventListener',
+        start,
+    )
+
+    block = panel[
+        start:end
+    ].lower()
+
+    assert (
+        "this does not undo"
+        in block
+    )
+
+    assert (
+        "git history"
+        in block
+    )
+
+    assert (
+        "remote actions"
+        in block
+    )
+
+    assert (
+        "database changes"
+        in block
+    )
+
+    assert (
+        "system/package changes"
+        in block
+    )
+
+    assert (
+        ".ai-workflow"
+        in block
+    )
+
+    assert (
+        "full rollback"
+        not in block
+    )
+
+    assert (
+        "fully transactional"
+        not in block
+    )

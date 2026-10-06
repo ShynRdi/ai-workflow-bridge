@@ -160,6 +160,156 @@ async function runSystemDiagnostics() {
   }
 }
 
+function formatCheckpointBytes(value) {
+  const bytes = Number(value || 0);
+
+  if (!Number.isFinite(bytes) || bytes <= 0) {
+    return "0 B";
+  }
+
+  if (bytes < 1024) {
+    return `${Math.round(bytes)} B`;
+  }
+
+  if (bytes < 1024 * 1024) {
+    return `${(bytes / 1024).toFixed(1)} KiB`;
+  }
+
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MiB`;
+}
+
+function renderCheckpoint(state = {}) {
+  const checkpoint =
+    state.checkpoint || {};
+
+  const available =
+    checkpoint.available === true;
+
+  const details =
+    $("checkpointDetails");
+
+  details?.classList.toggle(
+    "hidden",
+    !available,
+  );
+
+  if (!available) {
+    $("checkpointStatus").textContent =
+      "NONE";
+
+    $("checkpointSummary").textContent =
+      checkpoint.error ||
+      "No workspace checkpoint is available yet.";
+
+    $("acceptCheckpoint").disabled = true;
+    $("rollbackCheckpoint").disabled = true;
+
+    $("checkpointActionHint").textContent =
+      "Protected checkpoints appear here before meaningful local mutations.";
+
+    return;
+  }
+
+  const status = String(
+    checkpoint.status || "unknown",
+  );
+
+  $("checkpointStatus").textContent =
+    status
+      .replaceAll("_", " ")
+      .toUpperCase();
+
+  $("checkpointSummary").textContent =
+    checkpoint.command_summary ||
+    "Protected workspace mutation";
+
+  $("checkpointRisk").textContent =
+    checkpoint.risk_level || "—";
+
+  $("checkpointScope").textContent =
+    String(
+      checkpoint.rollback_scope ||
+      "workspace_files_only",
+    ).replaceAll("_", " ");
+
+  $("checkpointFiles").textContent =
+    String(
+      checkpoint.file_count || 0,
+    );
+
+  $("checkpointBytes").textContent =
+    formatCheckpointBytes(
+      checkpoint.total_bytes,
+    );
+
+  $("checkpointId").textContent =
+    checkpoint.checkpoint_id || "—";
+
+  const limitations =
+    $("checkpointLimitations");
+
+  limitations.replaceChildren();
+
+  const items = Array.isArray(
+    checkpoint.limitations,
+  )
+    ? checkpoint.limitations
+    : [];
+
+  if (!items.length) {
+    const row =
+      document.createElement("div");
+
+    row.className =
+      "diagnostic-empty";
+
+    row.textContent =
+      "Rollback is limited to captured workspace files.";
+
+    limitations.append(row);
+  } else {
+    for (const item of items) {
+      const row =
+        document.createElement("div");
+
+      row.className =
+        "recovery-approval";
+
+      const textNode =
+        document.createElement("small");
+
+      textNode.textContent =
+        `• ${String(item)}`;
+
+      row.append(textNode);
+      limitations.append(row);
+    }
+  }
+
+  $("acceptCheckpoint").disabled =
+    checkpoint.can_accept !== true;
+
+  $("rollbackCheckpoint").disabled =
+    checkpoint.can_rollback !== true;
+
+  if (state.lifecycle === "recovery_required") {
+    $("checkpointActionHint").textContent =
+      "Checkpoint actions are locked until recovery review is resolved.";
+  } else if (checkpoint.execution_active) {
+    $("checkpointActionHint").textContent =
+      "A local command is executing. Checkpoint decisions are temporarily locked.";
+  } else if (checkpoint.rollback_requires_pause) {
+    $("checkpointActionHint").textContent =
+      "Pause the workflow before rolling back. Keeping the current state does not require rollback.";
+  } else if (status === "ready") {
+    $("checkpointActionHint").textContent =
+      "Choose whether to keep the current workspace or restore captured workspace files.";
+  } else {
+    $("checkpointActionHint").textContent =
+      `This checkpoint is ${status.replaceAll("_", " ")} and is no longer actionable.`;
+  }
+}
+
 function renderRecovery(state = {}) {
   const recovery = state.recovery || null;
   const required =
@@ -201,6 +351,45 @@ function renderRecovery(state = {}) {
   } else {
     guard.textContent = "";
     guard.classList.add("hidden");
+  }
+
+  const checkpointRecovery =
+    recovery.checkpoint_recovery;
+
+  const checkpointBlock =
+    $("recoveryCheckpointBlock");
+
+  const hasCheckpointRecovery =
+    checkpointRecovery &&
+    typeof checkpointRecovery === "object";
+
+  checkpointBlock?.classList.toggle(
+    "hidden",
+    !hasCheckpointRecovery,
+  );
+
+  if (hasCheckpointRecovery) {
+    $("recoveryCheckpointStatus").textContent =
+      String(
+        checkpointRecovery.status ||
+        "unknown",
+      )
+        .replaceAll("_", " ")
+        .toUpperCase();
+
+    $("recoveryCheckpointId").textContent =
+      checkpointRecovery.checkpoint_id ||
+      "—";
+
+    $("recoveryCheckpointScope").textContent =
+      String(
+        checkpointRecovery.rollback_scope ||
+        "workspace_files_only",
+      ).replaceAll("_", " ");
+
+    $("recoveryCheckpointNote").textContent =
+      checkpointRecovery.note ||
+      "Rollback completion could not be determined safely.";
   }
 
   const list = $("recoveryApprovals");
@@ -296,13 +485,83 @@ function handleEvent(event) { if (!event) return; if (event.kind === "host_statu
       $("hostStatusDetail").textContent = event.text || "Native Messaging";
       addLog(event.connected ? "KAPOW" : "UH-OH", event.text || "Host status changed");
     }
-  } else if (event.kind === "state") { const state = event.state || {}; lastState = state; const lifecycle = state.lifecycle || state.status || "setup"; $("runStatus").textContent = String(lifecycle).replaceAll("_", " ").toUpperCase(); $("runStatusDetail").textContent = state.current_step || "No active workflow"; fillConfig(state.config || {}); fillBudget(state.budget || {}, state.config || {}); renderRecovery(state); setLifecycleButtons(state); if (state.active_provider_name) { $("activeProvider").textContent = state.active_provider_name.toUpperCase().slice(0,13); $("providerDetail").textContent = "active browser adapter"; } } else if (event.kind === "recovery_resolved") {
+  } else if (event.kind === "state") { const state = event.state || {}; lastState = state; const lifecycle = state.lifecycle || state.status || "setup"; $("runStatus").textContent = String(lifecycle).replaceAll("_", " ").toUpperCase(); $("runStatusDetail").textContent = state.current_step || "No active workflow"; fillConfig(state.config || {}); fillBudget(state.budget || {}, state.config || {}); renderCheckpoint(state); renderRecovery(state); setLifecycleButtons(state); if (state.active_provider_name) { $("activeProvider").textContent = state.active_provider_name.toUpperCase().slice(0,13); $("providerDetail").textContent = "active browser adapter"; } } else if (event.kind === "recovery_resolved") {
     $("recoveryPanel")?.classList.add("hidden");
     addLog(
       "RECOVERED",
       event.text || "Interrupted workflow reviewed.",
     );
-  } else if (event.kind === "approval_required") { showApproval(event); addLog("WAIT!", event.summary || "Approval required"); } else if (event.kind === "approval_resolved") { $("approvalPanel").classList.add("hidden"); currentApprovalId = null; addLog("DECIDED", `${event.decision || "decision"}: ${event.summary || "approval resolved"}`); } else if (event.kind === "step") { $("runStatus").textContent = (event.status || "RUNNING").replaceAll("_", " ").toUpperCase(); $("runStatusDetail").textContent = event.title || event.text || "Workflow step"; addLog(event.badge || "BAM", event.text || event.title || "Step update"); } else if (event.kind === "error") { $("runStatus").textContent = "PAUSED"; $("runStatusDetail").textContent = event.text || "Workflow error"; addLog("CRASH", event.text || "Unknown error"); } else if (event.kind === "info") addLog(event.badge || "INFO", event.text || "Update"); }
+  } else if (event.kind === "checkpoint") {
+    addLog(
+      "SAVE",
+      event.text || "Workspace checkpoint created.",
+    );
+
+    setTimeout(
+      () => command("get_state").catch(() => {}),
+      50,
+    );
+  } else if (event.kind === "checkpoint_accepted") {
+    addLog(
+      "KEEP",
+      event.text || "Checkpoint accepted.",
+    );
+
+    setTimeout(
+      () => command("get_state").catch(() => {}),
+      50,
+    );
+  } else if (event.kind === "checkpoint_rolled_back") {
+    addLog(
+      "UNDO",
+      event.text || "Workspace checkpoint rolled back.",
+    );
+
+    setTimeout(
+      () => command("get_state").catch(() => {}),
+      50,
+    );
+  } else if (event.kind === "approval_required") { showApproval(event); addLog("WAIT!", event.summary || "Approval required"); } else if (event.kind === "approval_resolved") { $("approvalPanel").classList.add("hidden"); currentApprovalId = null; addLog("DECIDED", `${event.decision || "decision"}: ${event.summary || "approval resolved"}`); } else if (event.kind === "step") {
+    const stepStatus = String(
+      event.status || "running",
+    );
+
+    $("runStatus").textContent =
+      stepStatus
+        .replaceAll("_", " ")
+        .toUpperCase();
+
+    $("runStatusDetail").textContent =
+      event.title ||
+      event.text ||
+      "Workflow step";
+
+    addLog(
+      event.badge || "BAM",
+      event.text ||
+      event.title ||
+      "Step update",
+    );
+
+    // Refresh authoritative native state only after states
+    // that can change checkpoint action availability.
+    // In particular, waiting_llm arrives immediately before
+    // the execution wrapper releases command_execution_active.
+    if (
+      [
+        "paused",
+        "waiting_llm",
+        "failed",
+        "idle",
+        "complete",
+      ].includes(stepStatus)
+    ) {
+      setTimeout(
+        () => command("get_state").catch(() => {}),
+        100,
+      );
+    }
+  } else if (event.kind === "error") { $("runStatus").textContent = "PAUSED"; $("runStatusDetail").textContent = event.text || "Workflow error"; addLog("CRASH", event.text || "Unknown error"); } else if (event.kind === "info") addLog(event.badge || "INFO", event.text || "Update"); }
 chrome.runtime.onMessage.addListener((message) => { if (message?.type === "BRIDGE_EVENT") handleEvent(message.payload); });
 populateProviders(); $("providerId").value = "chatgpt"; updateProviderCard(); $("providerId").addEventListener("change", updateProviderCard); $("providerAuto").addEventListener("change", updateProviderCard); $("modelLabel").addEventListener("input", updateProviderCard); $("grantProvider").addEventListener("click", () => grantProviderAccess().catch((e) => addLog("NOPE", e.message))); $("saveConfig").addEventListener("click", () => saveProject().then(() => setTimeout(() => command("get_state"), 200)).catch((e) => addLog("CRASH", e.message)));
 $("runDiagnostics").addEventListener("click", () => runSystemDiagnostics());
@@ -336,6 +595,110 @@ $("discardRecovery").addEventListener("click", async () => {
     );
   }
 });
+$("acceptCheckpoint").addEventListener(
+  "click",
+  async () => {
+    try {
+      const checkpoint =
+        lastState?.checkpoint;
+
+      if (
+        !checkpoint ||
+        checkpoint.can_accept !== true
+      ) {
+        throw new Error(
+          "The checkpoint is not currently available for acceptance.",
+        );
+      }
+
+      await command(
+        "checkpoint_accept",
+      );
+
+      addLog(
+        "KEEP",
+        "Keeping the current workspace state.",
+      );
+
+      setTimeout(
+        () => command("get_state").catch(() => {}),
+        100,
+      );
+    } catch (error) {
+      addLog(
+        "CRASH",
+        String(
+          error?.message || error,
+        ),
+      );
+    }
+  },
+);
+
+$("rollbackCheckpoint").addEventListener(
+  "click",
+  async () => {
+    try {
+      const checkpoint =
+        lastState?.checkpoint;
+
+      if (
+        !checkpoint ||
+        checkpoint.can_rollback !== true
+      ) {
+        throw new Error(
+          "Pause the workflow before rolling back this checkpoint.",
+        );
+      }
+
+      const confirmed = globalThis.confirm(
+        [
+          "Roll back captured workspace files?",
+          "",
+          "This DOES NOT undo:",
+          "• Git history or .git metadata",
+          "• remote actions such as git push",
+          "• database changes",
+          "• system/package changes",
+          "• .ai-workflow state",
+          "• excluded volatile directories",
+          "",
+          "The workflow will remain paused after rollback.",
+        ].join("\n"),
+      );
+
+      if (!confirmed) {
+        addLog(
+          "CANCEL",
+          "Workspace rollback cancelled.",
+        );
+        return;
+      }
+
+      await command(
+        "checkpoint_rollback",
+      );
+
+      addLog(
+        "UNDO",
+        "Explicit workspace rollback requested.",
+      );
+
+      setTimeout(
+        () => command("get_state").catch(() => {}),
+        100,
+      );
+    } catch (error) {
+      addLog(
+        "CRASH",
+        String(
+          error?.message || error,
+        ),
+      );
+    }
+  },
+);
+
 $("planProject").addEventListener("click", async () => { try { if (!$("projectGoal").value.trim()) throw new Error("Add a project goal/master brief before planning."); const p = await grantProviderAccess({ quiet: true }); await saveProject({ log: false }); await command("plan_project"); addLog("PLAN!", `Sent the protected project-start prompt to ${p.name}.`); } catch (e) { addLog("CRASH", e.message); } });
 $("armWorkflow").addEventListener("click", async () => { try { const p = await grantProviderAccess({ quiet: true }); await saveProject({ log: false }); await command("arm"); addLog("ZAP!", `Arming the current ${p.name} thread.`); } catch (e) { addLog("CRASH", e.message); } });
 $("pauseWorkflow").addEventListener("click", () => command("pause")); $("resumeWorkflow").addEventListener("click", () => command("resume")); $("refreshState").addEventListener("click", () => command("get_state")); $("resetSession").addEventListener("click", () => command("reset_session"));

@@ -861,3 +861,236 @@ def test_checkpoint_actions_are_blocked_during_recovery_required():
         == "recovery_required"
         for item in errors
     )
+
+
+def test_public_checkpoint_state_exposes_safe_review_metadata(
+    tmp_path,
+):
+    payload = checkpoint(
+        tmp_path
+    )
+
+    payload[
+        "created_at"
+    ] = "2026-10-06T10:00:00+00:00"
+
+    payload[
+        "command"
+    ] = {
+        "summary": "Protected mutation",
+        "risk_level": "R2",
+    }
+
+    payload[
+        "snapshot"
+    ].update({
+        "archive_path": (
+            "/secret/checkpoint/workspace.tar.gz"
+        ),
+        "archive_sha256": (
+            "a" * 64
+        ),
+        "file_count": 7,
+        "total_bytes": 2048,
+        "rollback_limitations": [
+            "Git metadata is not captured.",
+            "Remote effects are outside this checkpoint.",
+        ],
+    })
+
+    store = FakeStore(
+        payload
+    )
+
+    workspace = Path(
+        payload[
+            "workspace_root"
+        ]
+    )
+
+    bridge = Bridge(
+        workspace=workspace,
+        store=store,
+    )
+
+    result = (
+        bridge.public_checkpoint_state()
+    )
+
+    assert result[
+        "available"
+    ] is True
+
+    assert (
+        result[
+            "checkpoint_id"
+        ]
+        == "cp-latest"
+    )
+
+    assert (
+        result[
+            "command_summary"
+        ]
+        == "Protected mutation"
+    )
+
+    assert (
+        result[
+            "risk_level"
+        ]
+        == "R2"
+    )
+
+    assert (
+        result[
+            "file_count"
+        ]
+        == 7
+    )
+
+    assert (
+        result[
+            "total_bytes"
+        ]
+        == 2048
+    )
+
+    serialized = repr(
+        result
+    )
+
+    assert (
+        "archive_path"
+        not in serialized
+    )
+
+    assert (
+        "/secret/checkpoint"
+        not in serialized
+    )
+
+    assert (
+        "archive_sha256"
+        not in serialized
+    )
+
+
+def test_public_checkpoint_state_requires_pause_for_rollback(
+    tmp_path,
+):
+    payload = checkpoint(
+        tmp_path
+    )
+
+    workspace = Path(
+        payload[
+            "workspace_root"
+        ]
+    )
+
+    bridge = Bridge(
+        workspace=workspace,
+        store=FakeStore(
+            payload
+        ),
+    )
+
+    bridge.paused = False
+    bridge.lifecycle = "running"
+
+    running = (
+        bridge.public_checkpoint_state()
+    )
+
+    assert (
+        running[
+            "can_accept"
+        ]
+        is True
+    )
+
+    assert (
+        running[
+            "can_rollback"
+        ]
+        is False
+    )
+
+    assert (
+        running[
+            "rollback_requires_pause"
+        ]
+        is True
+    )
+
+    bridge.paused = True
+    bridge.lifecycle = "paused"
+
+    paused = (
+        bridge.public_checkpoint_state()
+    )
+
+    assert (
+        paused[
+            "can_rollback"
+        ]
+        is True
+    )
+
+
+def test_orchestrator_state_never_exposes_checkpoint_archive_material(
+    tmp_path,
+):
+    payload = checkpoint(
+        tmp_path
+    )
+
+    payload[
+        "snapshot"
+    ].update({
+        "archive_path": (
+            "/private/checkpoints/workspace.tar.gz"
+        ),
+        "archive_sha256": (
+            "b" * 64
+        ),
+        "file_count": 3,
+        "total_bytes": 123,
+    })
+
+    workspace = Path(
+        payload[
+            "workspace_root"
+        ]
+    )
+
+    bridge = Bridge(
+        workspace=workspace,
+        store=FakeStore(
+            payload
+        ),
+    )
+
+    public = (
+        bridge.public_checkpoint_state()
+    )
+
+    serialized = repr(
+        public
+    )
+
+    assert (
+        "archive_path"
+        not in serialized
+    )
+
+    assert (
+        "archive_sha256"
+        not in serialized
+    )
+
+    assert (
+        "/private/checkpoints"
+        not in serialized
+    )

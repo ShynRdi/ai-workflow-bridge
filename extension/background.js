@@ -1471,6 +1471,24 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           ok: true,
           discarded: true,
         };
+      } else if (command.action === "checkpoint_accept") {
+        sendNative({
+          type: "checkpoint_accept",
+        });
+
+        return {
+          ok: true,
+          requested: "checkpoint_accept",
+        };
+      } else if (command.action === "checkpoint_rollback") {
+        sendNative({
+          type: "checkpoint_rollback",
+        });
+
+        return {
+          ok: true,
+          requested: "checkpoint_rollback",
+        };
       } else if (command.action === "diagnostics") {
         return {
           ok: true,
