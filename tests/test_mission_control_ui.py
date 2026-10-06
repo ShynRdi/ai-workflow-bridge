@@ -350,3 +350,128 @@ def test_checkpoint_confirmation_never_claims_full_transaction():
         "fully transactional"
         not in block
     )
+
+
+def test_checkpoint_buttons_follow_authoritative_native_capabilities():
+    panel = (
+        EXT /
+        "sidepanel.js"
+    ).read_text(
+        encoding="utf-8"
+    )
+
+    assert (
+        'checkpoint.can_accept !== true'
+        in panel
+    )
+
+    assert (
+        'checkpoint.can_rollback !== true'
+        in panel
+    )
+
+    assert (
+        '$("acceptCheckpoint").disabled ='
+        in panel
+    )
+
+    assert (
+        '$("rollbackCheckpoint").disabled ='
+        in panel
+    )
+
+    assert (
+        "checkpoint.can_accept !== true"
+        in panel
+    )
+
+    assert (
+        "checkpoint.can_rollback !== true"
+        in panel
+    )
+
+
+def test_checkpoint_state_refreshes_after_execution_or_pause_boundary():
+    panel = (
+        EXT /
+        "sidepanel.js"
+    ).read_text(
+        encoding="utf-8"
+    )
+
+    assert (
+        '"waiting_llm"'
+        in panel
+    )
+
+    assert (
+        '"paused"'
+        in panel
+    )
+
+    assert (
+        'command("get_state")'
+        in panel
+    )
+
+
+def test_checkpoint_confirmation_never_claims_full_transaction():
+    panel = (
+        EXT /
+        "sidepanel.js"
+    ).read_text(
+        encoding="utf-8"
+    )
+
+    start = panel.index(
+        '$("rollbackCheckpoint").addEventListener'
+    )
+
+    end = panel.index(
+        '$("planProject").addEventListener',
+        start,
+    )
+
+    block = panel[
+        start:end
+    ].lower()
+
+    assert (
+        "this does not undo"
+        in block
+    )
+
+    assert (
+        "git history"
+        in block
+    )
+
+    assert (
+        "remote actions"
+        in block
+    )
+
+    assert (
+        "database changes"
+        in block
+    )
+
+    assert (
+        "system/package changes"
+        in block
+    )
+
+    assert (
+        ".ai-workflow"
+        in block
+    )
+
+    assert (
+        "full rollback"
+        not in block
+    )
+
+    assert (
+        "fully transactional"
+        not in block
+    )

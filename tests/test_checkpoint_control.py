@@ -1094,3 +1094,60 @@ def test_orchestrator_state_never_exposes_checkpoint_archive_material(
         "/private/checkpoints"
         not in serialized
     )
+
+
+def test_orchestrator_state_never_exposes_checkpoint_archive_material(
+    tmp_path,
+):
+    payload = checkpoint(
+        tmp_path
+    )
+
+    payload[
+        "snapshot"
+    ].update({
+        "archive_path": (
+            "/private/checkpoints/workspace.tar.gz"
+        ),
+        "archive_sha256": (
+            "b" * 64
+        ),
+        "file_count": 3,
+        "total_bytes": 123,
+    })
+
+    workspace = Path(
+        payload[
+            "workspace_root"
+        ]
+    )
+
+    bridge = Bridge(
+        workspace=workspace,
+        store=FakeStore(
+            payload
+        ),
+    )
+
+    public = (
+        bridge.public_checkpoint_state()
+    )
+
+    serialized = repr(
+        public
+    )
+
+    assert (
+        "archive_path"
+        not in serialized
+    )
+
+    assert (
+        "archive_sha256"
+        not in serialized
+    )
+
+    assert (
+        "/private/checkpoints"
+        not in serialized
+    )
