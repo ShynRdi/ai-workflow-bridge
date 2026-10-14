@@ -41,6 +41,40 @@ def sanitize_pending_approval(
     }
 
 
+def sanitize_checkpoint_recovery(
+    value: dict[str, Any],
+) -> dict[str, Any]:
+    return {
+        "checkpoint_id": str(
+            value.get("checkpoint_id")
+            or ""
+        ),
+        "status": str(
+            value.get("status")
+            or ""
+        ),
+        "rollback_scope": str(
+            value.get("rollback_scope")
+            or "workspace_files_only"
+        ),
+        "command_summary": str(
+            value.get("command_summary")
+            or ""
+        ),
+        "risk_level": str(
+            value.get("risk_level")
+            or ""
+        ),
+        "uncertain": bool(
+            value.get("uncertain")
+        ),
+        "note": str(
+            value.get("note")
+            or ""
+        )[:500],
+    }
+
+
 def build_runtime_snapshot(
     *,
     lifecycle: str,
@@ -51,6 +85,7 @@ def build_runtime_snapshot(
     provider_guard: bool,
     pending: dict[str, dict[str, Any]] | None = None,
     budget: dict[str, Any] | None = None,
+    checkpoint_recovery: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     approvals = []
 
@@ -59,7 +94,7 @@ def build_runtime_snapshot(
         item.setdefault("approval_id", approval_id)
         approvals.append(sanitize_pending_approval(item))
 
-    return {
+    payload = {
         "version": 2,
         "lifecycle": str(lifecycle or "setup"),
         "status": str(status or "idle"),
@@ -70,6 +105,18 @@ def build_runtime_snapshot(
         "pending_approvals": approvals,
         "budget": dict(budget or {}),
     }
+
+    if isinstance(
+        checkpoint_recovery,
+        dict,
+    ):
+        payload[
+            "checkpoint_recovery"
+        ] = sanitize_checkpoint_recovery(
+            checkpoint_recovery
+        )
+
+    return payload
 
 
 def requires_recovery(
@@ -96,7 +143,7 @@ def recovery_summary(
         if isinstance(item, dict)
     ]
 
-    return {
+    result = {
         "required": True,
         "previous_lifecycle": str(
             snapshot.get("lifecycle") or "unknown"
@@ -115,3 +162,21 @@ def recovery_summary(
         ),
         "pending_approvals": approvals,
     }
+
+    checkpoint_recovery = (
+        snapshot.get(
+            "checkpoint_recovery"
+        )
+    )
+
+    if isinstance(
+        checkpoint_recovery,
+        dict,
+    ):
+        result[
+            "checkpoint_recovery"
+        ] = sanitize_checkpoint_recovery(
+            checkpoint_recovery
+        )
+
+    return result

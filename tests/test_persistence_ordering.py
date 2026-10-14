@@ -75,7 +75,7 @@ def test_command_state_is_persisted_before_process_execution(
         def send_report(self, _text):
             pass
 
-    class Bridge:
+    class Bridge(orchestrator_risk.RiskAwareExecutionMixin):
         def __init__(self):
             self.config = {
                 "workspace_root": str(tmp_path),

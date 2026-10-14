@@ -1,5 +1,6 @@
 from orchestrator_project_state import ProjectStateMixin
 from orchestrator_core import CoreMixin
+from orchestrator_checkpoints import CheckpointControlMixin
 from orchestrator_messages import MessageMixin
 from orchestrator_response import ResponseMixin
 from orchestrator_approval import ApprovalMixin
@@ -8,7 +9,7 @@ from orchestrator_execution import ExecutionMixin
 from orchestrator_reporting import ReportingMixin
 
 
-class Orchestrator(ProjectStateMixin, CoreMixin, MessageMixin, ResponseMixin, ApprovalMixin, RiskAwareExecutionMixin, ExecutionMixin, ReportingMixin):
+class Orchestrator(ProjectStateMixin, CoreMixin, CheckpointControlMixin, MessageMixin, ResponseMixin, ApprovalMixin, RiskAwareExecutionMixin, ExecutionMixin, ReportingMixin):
     def handle(self, message):
         if message.get("type") == "set_config":
             message = dict(message)

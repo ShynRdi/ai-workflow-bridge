@@ -666,3 +666,60 @@ def test_same_bound_tab_safety_mismatch_fails_safe():
     assert "findBoundLlmTab(tabId)" in block
     assert 'type: "provider_safety_signal"' in block
     assert "failClosed:" in block
+
+
+def test_checkpoint_actions_are_native_only_and_do_not_touch_llm_tab():
+    background = (
+        EXT /
+        "background.js"
+    ).read_text(
+        encoding="utf-8"
+    )
+
+    start = background.index(
+        'command.action === "checkpoint_accept"'
+    )
+
+    end = background.index(
+        'command.action === "diagnostics"',
+        start,
+    )
+
+    block = background[
+        start:end
+    ]
+
+    assert (
+        'type: "checkpoint_accept"'
+        in block
+    )
+
+    assert (
+        'type: "checkpoint_rollback"'
+        in block
+    )
+
+    assert (
+        "findActiveLlmTab("
+        not in block
+    )
+
+    assert (
+        "inspectActiveLlmTab("
+        not in block
+    )
+
+    assert (
+        "sendTextToLlm("
+        not in block
+    )
+
+    assert (
+        "SEND_TO_LLM"
+        not in block
+    )
+
+    assert (
+        "chrome.permissions"
+        not in block
+    )

@@ -8,7 +8,7 @@
 
 AI Workflow Bridge lets a supported web LLM plan work, emit a structured workflow contract, receive terminal evidence, and continue a project — while a deterministic local runner enforces roadmap state, approvals, rate limits, account-safety rules, and command policy.
 
-> **Public Preview 0.3.3:** this is pre-1.0 developer tooling. It is intentionally conservative, but it is **not an OS sandbox**. Read [SECURITY.md](SECURITY.md) before using it on valuable or sensitive systems.
+> **Public Preview 0.3.4:** this is pre-1.0 developer tooling. It is intentionally conservative, but it is **not an OS sandbox**. Read [SECURITY.md](SECURITY.md) before using it on valuable or sensitive systems.
 
 ## Why this exists
 
@@ -46,6 +46,9 @@ Same web LLM conversation
 - Read-only system diagnostics for native-host, workspace, Git, extension, provider permission, active tab, content-script and version health.
 - Active-tab and conversation-identity binding: workflows remain attached to the explicitly selected provider tab and conversation instead of silently following browser focus or same-tab navigation.
 - Crash/restart recovery: interrupted active workflows restart in `RECOVERY_REQUIRED` and never automatically replay commands, approvals, downloads, execution cursors, or LLM prompts.
+- Protected R2/R3 execution creates a durable workspace-file checkpoint before the command receives an opportunity to mutate the project.
+- Mission Control exposes explicit checkpoint acceptance and workspace rollback controls.
+- Workspace rollback is deliberately scoped: it does not promise reversal of `.git` metadata/history, `.ai-workflow`, excluded volatile directories, remote actions, database changes or system changes.
 - Restart-safe provider guards and autonomy budgets: account-safety pauses and AI-turn budget state survive native-host restarts.
 - Multi-web-LLM provider registry with explicit support levels.
 - Per-provider optional Chrome site permissions.
