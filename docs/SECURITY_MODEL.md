@@ -53,6 +53,14 @@ Automated follow-up turns continue through that bound tab rather than whichever 
 
 This reduces cross-conversation confusion when multiple tabs from the same provider are open.
 
+### Workspace checkpoints and rollback
+
+Protected R2/R3 execution creates a bounded workspace-file checkpoint after required approval and before command execution.
+
+Rollback is always an explicit human action. It cannot run while a local command is executing and requires the workflow to be paused.
+
+Checkpoint restore validates archive integrity, member paths and member types before restoring captured workspace files. Interrupted rollback is treated as uncertain state and is never automatically retried after restart.
+
 ### Diagnostics
 
 System diagnostics are designed as read-only health inspection. Running diagnostics does not request new provider permissions, inject a content script, submit an LLM prompt or execute a project command.
@@ -60,6 +68,12 @@ System diagnostics are designed as read-only health inspection. Running diagnost
 Diagnostics may report a warning when a provider tab/content script is unavailable rather than mutating browser state to repair it automatically.
 
 ## Known limitations
+
+### Checkpoint rollback is not transactional
+
+A checkpoint covers only the captured workspace-file scope. It does not restore Git metadata or history under `.git`, native-owned `.ai-workflow` state, excluded volatile directories, remote or API effects, database state, system package changes, or other external side effects.
+
+A crash during rollback may leave the workspace in an uncertain partially restored state. The Bridge therefore requires explicit recovery review instead of automatically retrying rollback.
 
 ### No OS sandbox
 

@@ -1,4 +1,4 @@
-# AI Workflow Bridge 0.3.3 — Complete User Guide
+# AI Workflow Bridge 0.3.4 — Complete User Guide
 
 AI Workflow Bridge connects a web LLM conversation to a guarded local runner. The LLM plans and emits a machine-readable workflow contract; the native host executes only approved/local-safe commands, returns stdout/stderr to the same conversation, and stops whenever a human decision or provider safety condition appears.
 
@@ -96,7 +96,7 @@ The Bridge never signs in for you and never asks for your password or cookies.
 
 # 2. Site permissions
 
-Version 0.3.3 does **not** request access to every LLM website at install time.
+Version 0.3.4 does **not** request access to every LLM website at install time.
 
 Choose your Web LLM in **AI Engine + Safety**, then click:
 
@@ -181,6 +181,28 @@ The Bridge deliberately does not restore or automatically replay the command exe
 Provider safety guards and autonomy-budget counters survive native-host restart.
 
 Workflow browser binding also includes conversation identity. Navigating the bound tab to another conversation causes subsequent workflow activity to fail closed and requires explicit rebinding.
+
+## 2.4 Workspace checkpoints and rollback
+
+Before protected R2/R3 command execution, the native host creates a durable checkpoint of the captured workspace-file scope after required approval has been resolved and before the local command is allowed to run.
+
+Mission Control shows the latest checkpoint together with its risk level, captured file count, size, rollback scope and known limitations.
+
+A ready checkpoint has two explicit human actions:
+
+- **KEEP CURRENT STATE** marks the checkpoint accepted and keeps the current workspace.
+- **ROLL BACK WORKSPACE** restores the captured workspace-file snapshot. The workflow must be paused first.
+
+Workspace rollback is not a universal transaction. It does **not** guarantee reversal of:
+
+- `.git` metadata, Git history or remote Git operations;
+- native-owned `.ai-workflow` state;
+- excluded volatile directories such as `node_modules`, virtual environments and build/cache directories;
+- remote/API side effects;
+- database migrations or external database state;
+- system/package-manager changes.
+
+If the native host crashes while rollback is in progress, restart enters `RECOVERY_REQUIRED`. The Bridge does not automatically retry the rollback because it may be impossible to determine whether restoration had not started, had partially completed or had completed before the crash.
 
 # 3. The project lifecycle
 

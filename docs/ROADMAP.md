@@ -19,9 +19,11 @@ This roadmap is directional and does not promise dates.
 
 ## 0.3.4 — Checkpoint and rollback
 
-- Project checkpoints before meaningful mutations.
-- User-visible rollback boundaries.
-- Git-aware recovery where available without assuming every workspace uses Git.
+- Durable workspace-file checkpoints before protected R2/R3 execution.
+- Explicit Mission Control acceptance and rollback actions.
+- Hardened bounded restore with archive and path validation.
+- Crash-safe rollback lifecycle with explicit restart recovery and no automatic replay.
+- Clear rollback boundaries for Git metadata, native state and external side effects.
 
 ## 0.3.5 — Diff review and acceptance criteria
 

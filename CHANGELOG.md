@@ -2,6 +2,22 @@
 
 All notable public changes will be documented here. This project follows Semantic Versioning where Chrome extension version constraints allow it.
 
+## [0.3.4] - 2026-10-14
+
+### Checkpoint and rollback
+
+- Added durable checkpoint metadata and bounded workspace-file snapshots before protected R2/R3 command execution.
+- Checkpoints are created only after required approval is resolved and before the local process is allowed to mutate the workspace.
+- Added explicit checkpoint lifecycle states with atomic transitions for ready, accepted, rolling-back, rolled-back, rollback-failed and invalid checkpoints.
+- Added a hardened workspace rollback engine with archive integrity verification, traversal/type validation, symlink protection, bounded extraction and staging before restore.
+- Rollback restores captured workspace files only; `.git`, native-owned `.ai-workflow`, excluded volatile directories, remote effects, database changes and system changes are outside the rollback guarantee.
+- Added explicit **KEEP CURRENT STATE** and **ROLL BACK WORKSPACE** controls in Mission Control with rollback-scope and limitation disclosure.
+- Rollback is forbidden while a local command is executing and requires the workflow to be paused.
+- Interrupted rollback enters fail-closed recovery and is never automatically retried or replayed after restart.
+- Added cross-process SQLite crash/restart coverage for interrupted rollback reconciliation.
+- Recovery review metadata excludes snapshot archive paths, hashes and executable continuation state.
+- Bumped extension, content-script, Mission Control and public documentation versions to 0.3.4.
+
 ## [0.3.3] - 2026-10-05
 
 ### Crash-safe recovery and conversation identity
