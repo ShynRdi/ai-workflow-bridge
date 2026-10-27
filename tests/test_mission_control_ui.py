@@ -475,3 +475,89 @@ def test_checkpoint_confirmation_never_claims_full_transaction():
         "fully transactional"
         not in block
     )
+
+
+def test_checkpoint_ui_binds_actions_to_rendered_checkpoint_identity():
+    panel = (
+        EXT /
+        "sidepanel.js"
+    ).read_text(
+        encoding="utf-8"
+    )
+
+    assert (
+        "checkpoint.checkpoint_id"
+        in panel
+    )
+
+    assert (
+        'command(\n        "checkpoint_accept",'
+        in panel
+    )
+
+    assert (
+        'command(\n        "checkpoint_rollback",'
+        in panel
+    )
+
+    assert (
+        "checkpoint_id: checkpointId"
+        in panel
+    )
+
+
+def test_checkpoint_ui_exposes_read_only_git_evidence_and_review():
+    html = (
+        EXT /
+        "sidepanel.html"
+    ).read_text(
+        encoding="utf-8"
+    )
+
+    panel = (
+        EXT /
+        "sidepanel.js"
+    ).read_text(
+        encoding="utf-8"
+    )
+
+    for element_id in [
+        "checkpointGitState",
+        "checkpointGitBranch",
+        "checkpointGitHead",
+        "checkpointGitDirty",
+        "checkpointGitStaged",
+        "checkpointGitUnstaged",
+        "checkpointGitUntracked",
+        "checkpointGitReview",
+        "checkpointGitReviewStatus",
+        "checkpointGitReviewDetail",
+    ]:
+        assert (
+            f'id="{element_id}"'
+            in html
+        )
+
+    assert (
+        "renderCheckpointGit"
+        in panel
+    )
+
+    assert (
+        "requires_git_review"
+        in panel
+    )
+
+    combined = (
+        html +
+        panel
+    ).lower()
+
+    assert (
+        "git metadata restored: no"
+        in combined
+        or (
+            "rollback never rewrites"
+            in combined
+        )
+    )

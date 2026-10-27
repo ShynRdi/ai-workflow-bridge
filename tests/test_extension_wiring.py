@@ -723,3 +723,54 @@ def test_checkpoint_actions_are_native_only_and_do_not_touch_llm_tab():
         "chrome.permissions"
         not in block
     )
+
+
+def test_checkpoint_browser_actions_forward_exact_checkpoint_identity():
+    background = (
+        EXT /
+        "background.js"
+    ).read_text(
+        encoding="utf-8"
+    )
+
+    accept_start = background.index(
+        'command.action === "checkpoint_accept"'
+    )
+
+    rollback_start = background.index(
+        'command.action === "checkpoint_rollback"',
+        accept_start,
+    )
+
+    diagnostics_start = background.index(
+        'command.action === "diagnostics"',
+        rollback_start,
+    )
+
+    accept_block = background[
+        accept_start:rollback_start
+    ]
+
+    rollback_block = background[
+        rollback_start:diagnostics_start
+    ]
+
+    assert (
+        "command.checkpoint_id"
+        in accept_block
+    )
+
+    assert (
+        "checkpoint_id: checkpointId"
+        in accept_block
+    )
+
+    assert (
+        "command.checkpoint_id"
+        in rollback_block
+    )
+
+    assert (
+        "checkpoint_id: checkpointId"
+        in rollback_block
+    )

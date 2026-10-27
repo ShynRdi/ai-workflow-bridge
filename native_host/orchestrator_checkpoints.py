@@ -8,6 +8,10 @@ from checkpoint_restore import (
 )
 from recovery import recovery_summary
 from redaction import redact_text
+from runner import (
+    compare_git_snapshots,
+    git_snapshot,
+)
 
 
 class CheckpointControlMixin:
@@ -49,6 +53,59 @@ class CheckpointControlMixin:
             return None
 
         return items[0]
+
+    def _ready_checkpoint_by_id(
+        self,
+        checkpoint_id: str,
+    ) -> dict[str, Any] | None:
+        selected_id = str(
+            checkpoint_id or ""
+        ).strip()
+
+        if not selected_id:
+            raise ValueError(
+                "Checkpoint id is required"
+            )
+
+        checkpoint = (
+            self.store.get_checkpoint(
+                selected_id
+            )
+        )
+
+        if checkpoint is None:
+            return None
+
+        workspace = (
+            self._checkpoint_workspace()
+        )
+
+        checkpoint_workspace = str(
+            Path(
+                str(
+                    checkpoint.get(
+                        "workspace_root"
+                    )
+                    or ""
+                )
+            ).expanduser().resolve()
+        )
+
+        if checkpoint_workspace != workspace:
+            return None
+
+        if (
+            str(
+                checkpoint.get(
+                    "status"
+                )
+                or ""
+            )
+            != "ready"
+        ):
+            return None
+
+        return checkpoint
 
     def _checkpoint_control_error(
         self,
@@ -132,6 +189,137 @@ class CheckpointControlMixin:
                 )
                 or ""
             )
+
+            git_state = dict(
+                checkpoint.get(
+                    "git"
+                )
+                or {}
+            )
+
+            git_review = dict(
+                checkpoint.get(
+                    "git_review"
+                )
+                or {}
+            )
+
+            public_git = {
+                "is_git": bool(
+                    git_state.get(
+                        "is_git"
+                    )
+                ),
+                "branch": str(
+                    git_state.get(
+                        "branch"
+                    )
+                    or ""
+                ),
+                "head_short": str(
+                    git_state.get(
+                        "head_oid",
+                        git_state.get(
+                            "head",
+                            "",
+                        ),
+                    )
+                    or ""
+                )[:12],
+                "detached": bool(
+                    git_state.get(
+                        "detached"
+                    )
+                ),
+                "dirty": (
+                    git_state.get(
+                        "dirty"
+                    )
+                ),
+                "has_staged_changes": (
+                    git_state.get(
+                        "has_staged_changes"
+                    )
+                ),
+                "has_unstaged_changes": (
+                    git_state.get(
+                        "has_unstaged_changes"
+                    )
+                ),
+                "has_untracked_files": (
+                    git_state.get(
+                        "has_untracked_files"
+                    )
+                ),
+                "has_conflicts": (
+                    git_state.get(
+                        "has_conflicts"
+                    )
+                ),
+                "git_metadata_restorable": False,
+            }
+
+            public_git_review = {}
+
+            if git_review:
+                public_git_review = {
+                    "comparable": (
+                        git_review.get(
+                            "comparable"
+                        )
+                    ),
+                    "repository_identity_changed": (
+                        git_review.get(
+                            "repository_identity_changed"
+                        )
+                    ),
+                    "head_changed": (
+                        git_review.get(
+                            "head_changed"
+                        )
+                    ),
+                    "branch_changed": (
+                        git_review.get(
+                            "branch_changed"
+                        )
+                    ),
+                    "index_changed": (
+                        git_review.get(
+                            "index_changed"
+                        )
+                    ),
+                    "worktree_status_changed": (
+                        git_review.get(
+                            "worktree_status_changed"
+                        )
+                    ),
+                    "git_metadata_changed": (
+                        git_review.get(
+                            "git_metadata_changed"
+                        )
+                    ),
+                    "dirty_before": (
+                        git_review.get(
+                            "dirty_before"
+                        )
+                    ),
+                    "dirty_after": (
+                        git_review.get(
+                            "dirty_after"
+                        )
+                    ),
+                    "requires_git_review": bool(
+                        git_review.get(
+                            "requires_git_review"
+                        )
+                    ),
+                    "git_metadata_restored": False,
+                    "inspection_error": bool(
+                        git_review.get(
+                            "inspection_error"
+                        )
+                    ),
+                }
 
             execution_active = bool(
                 getattr(
@@ -228,6 +416,13 @@ class CheckpointControlMixin:
                 "execution_active": (
                     execution_active
                 ),
+                "git": public_git,
+                "git_review_available": bool(
+                    public_git_review
+                ),
+                "git_review": (
+                    public_git_review
+                ),
             }
 
         except Exception as error:
@@ -239,8 +434,9 @@ class CheckpointControlMixin:
             }
 
 
-    def accept_latest_checkpoint(
+    def accept_checkpoint(
         self,
+        checkpoint_id: str,
     ) -> bool:
         if bool(
             getattr(
@@ -272,7 +468,9 @@ class CheckpointControlMixin:
 
             try:
                 checkpoint = (
-                    self._latest_ready_checkpoint()
+                    self._ready_checkpoint_by_id(
+                        checkpoint_id
+                    )
                 )
             except Exception as error:
                 self._checkpoint_control_error(
@@ -285,8 +483,9 @@ class CheckpointControlMixin:
 
             if checkpoint is None:
                 self._checkpoint_control_error(
-                    "There is no ready checkpoint for "
-                    "the current workspace."
+                    "The requested checkpoint is not ready "
+                    "for the current workspace. Refresh "
+                    "Mission Control before deciding."
                 )
                 return False
 
@@ -326,8 +525,9 @@ class CheckpointControlMixin:
 
             return True
 
-    def rollback_latest_checkpoint(
+    def rollback_checkpoint(
         self,
+        checkpoint_id: str,
     ) -> bool:
         if bool(
             getattr(
@@ -384,7 +584,9 @@ class CheckpointControlMixin:
 
             try:
                 checkpoint = (
-                    self._latest_ready_checkpoint()
+                    self._ready_checkpoint_by_id(
+                        checkpoint_id
+                    )
                 )
             except Exception as error:
                 self._checkpoint_control_error(
@@ -397,8 +599,9 @@ class CheckpointControlMixin:
 
             if checkpoint is None:
                 self._checkpoint_control_error(
-                    "There is no ready checkpoint for "
-                    "the current workspace."
+                    "The requested checkpoint is not ready "
+                    "for the current workspace. Refresh "
+                    "Mission Control before deciding."
                 )
                 return False
 
@@ -517,6 +720,78 @@ class CheckpointControlMixin:
                     )
                 )
 
+                checkpoint_git = dict(
+                    checkpoint.get(
+                        "git"
+                    )
+                    or {}
+                )
+
+                try:
+                    current_git = git_snapshot(
+                        workspace
+                    )
+
+                    git_review = (
+                        compare_git_snapshots(
+                            checkpoint_git,
+                            current_git,
+                        )
+                    )
+
+                    git_review[
+                        "inspection_error"
+                    ] = False
+
+                except Exception as git_error:
+                    # Git inspection is advisory. A successful
+                    # workspace restore must not be converted into
+                    # rollback failure merely because Git evidence
+                    # could not be inspected.
+                    git_review = {
+                        "comparable": False,
+                        "repository_identity_changed": None,
+                        "head_changed": None,
+                        "branch_changed": None,
+                        "index_changed": None,
+                        "worktree_status_changed": None,
+                        "git_metadata_changed": None,
+                        "dirty_before": (
+                            checkpoint_git.get(
+                                "dirty"
+                            )
+                        ),
+                        "dirty_after": None,
+                        "requires_git_review": True,
+                        "git_metadata_restored": False,
+                        "inspection_error": True,
+                        "inspection_error_detail": (
+                            redact_text(
+                                str(
+                                    git_error
+                                )
+                            )
+                        ),
+                    }
+
+                report[
+                    "git_review"
+                ] = git_review
+
+                checkpoint_with_review = {
+                    **checkpoint,
+                    "status": "rolling_back",
+                    "git_review": git_review,
+                }
+
+                # Preserve post-restore Git evidence in the
+                # checkpoint record before marking rollback
+                # durably complete. This is review metadata
+                # only and never rewrites .git.
+                self.store.put_checkpoint(
+                    checkpoint_with_review
+                )
+
                 completed = (
                     self.store.transition_checkpoint_status(
                         checkpoint_id,
@@ -622,9 +897,46 @@ class CheckpointControlMixin:
                 "review before resuming"
             )
 
+            git_review = dict(
+                report.get(
+                    "git_review"
+                )
+                or {}
+            )
+
+            requires_git_review = bool(
+                git_review.get(
+                    "requires_git_review"
+                )
+            )
+
+            if requires_git_review:
+                rollback_text = (
+                    "Workspace-file rollback completed, "
+                    "but Git state differs from or could "
+                    "not be safely compared with the "
+                    "checkpoint. Git metadata was NOT "
+                    "restored. Review Git state manually "
+                    "before resuming."
+                )
+            else:
+                rollback_text = (
+                    "Workspace-file rollback completed. "
+                    "Recorded Git evidence matches the "
+                    "checkpoint, but Git metadata was NOT "
+                    "rewritten or restored. Remote, "
+                    "database, system, and native "
+                    "lifecycle side effects remain "
+                    "outside rollback scope."
+                )
+
             self.emit_event({
                 "kind": "checkpoint_rolled_back",
-                "badge": "UNDO",
+                "badge": (
+                    "GIT?"
+                    if requires_git_review
+                    else "UNDO"
+                ),
                 "status": "rolled_back",
                 "checkpoint_id": checkpoint_id,
                 "rollback_scope": str(
@@ -645,13 +957,12 @@ class CheckpointControlMixin:
                     )
                     or 0
                 ),
-                "text": (
-                    "Workspace-file rollback completed. "
-                    "Git metadata, remote effects, "
-                    "database changes, system changes, "
-                    "and native lifecycle state were "
-                    "not reversed."
+                "git_review": git_review,
+                "git_review_required": (
+                    requires_git_review
                 ),
+                "git_metadata_restored": False,
+                "text": rollback_text,
             })
 
             self.emit({
