@@ -2,7 +2,7 @@
 
 All notable public changes will be documented here. This project follows Semantic Versioning where Chrome extension version constraints allow it.
 
-## [0.3.4] - 2026-10-14
+## [0.3.4] - 2026-10-27
 
 ### Checkpoint and rollback
 

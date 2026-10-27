@@ -11,7 +11,7 @@ def test_public_docs_are_aligned_with_034():
 
     assert "Public Preview 0.3.4" in readme
     assert "AI Workflow Bridge 0.3.4" in guide
-    assert "## [0.3.4] - 2026-10-14" in changelog
+    assert "## [0.3.4] - 2026-10-27" in changelog
     assert "RECOVERY_REQUIRED" in readme
     assert "Checkpoint and rollback" in changelog
 
