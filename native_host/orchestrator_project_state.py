@@ -101,12 +101,26 @@ Before READY_TO_ARM, include exactly one machine-readable roadmap:
 <<<AI_WORKFLOW_ROADMAP>>>
 {{
   "phases": [
-    {{"id": "PHASE-ID", "title": "short title", "stages": ["STAGE-1", "STAGE-2"]}}
+    {{
+      "id": "PHASE-ID",
+      "title": "short title",
+      "stages": ["STAGE-1", "STAGE-2"],
+      "acceptance_criteria": {{
+        "STAGE-1": [
+          "observable criterion that proves STAGE-1 is complete"
+        ],
+        "STAGE-2": [
+          "observable criterion that proves STAGE-2 is complete"
+        ]
+      }}
+    }}
   ]
 }}
 <<<END_AI_WORKFLOW_ROADMAP>>>
 
 Phase/stage identifiers must be stable, concise, and ordered.
+Every executable stage must have explicit observable acceptance criteria in acceptance_criteria.
+Acceptance criteria must describe verifiable outcomes, not implementation intentions.
 
 End the response with exactly:
 READY_TO_ARM
@@ -117,14 +131,38 @@ Do not put prose after READY_TO_ARM.
         try:
             state = self._sync_from_project_state()
         except Exception as error:
-            raise RuntimeError(f"Project-local roadmap state is invalid: {error}") from error
+            raise RuntimeError(
+                f"Project-local roadmap state is invalid: {error}"
+            ) from error
+
         base = super().controller_prompt()
         workspace = self._workspace_root()
+
         if not workspace or not Path(workspace).expanduser().is_dir():
             return base
+
         summary = project_state_summary(workspace, state)
         current = (summary.get("current") or {}).get("label") or "—"
         nxt = (summary.get("next") or {}).get("label") or "—"
+
+        acceptance = [
+            str(value).strip()
+            for value in (
+                summary.get("current_acceptance_criteria")
+                or []
+            )
+            if str(value).strip()
+        ]
+
+        acceptance_text = (
+            "\n".join(
+                f"- {value}"
+                for value in acceptance
+            )
+            if acceptance
+            else "- No canonical acceptance criteria declared."
+        )
+
         return base + f'''
 
 PROJECT-LOCAL ROADMAP AUTHORITY
@@ -133,6 +171,8 @@ PROJECT-LOCAL ROADMAP AUTHORITY
 - Current local position: {current}
 - Immediate next position: {nxt}
 - Progress: {summary.get("completed", 0)} / {summary.get("total", 0)} stages completed
+- Current stage acceptance criteria:
+{acceptance_text}
 - These lifecycle files are owned by the native host. You may inspect them with read-only commands, but NEVER edit, replace, delete, move, or generate .ai-workflow/* yourself.
 - Propose roadmap transitions only through the contract phase/stage fields. The native host validates and persists accepted transitions.
 '''

@@ -135,3 +135,131 @@ def test_rejects_symlinked_history_file_without_touching_target(
 
     # control_paths validates the whole native-owned layout before writing.
     assert not (control / "ROADMAP.md").exists()
+
+
+def test_project_state_persists_stage_acceptance_criteria(
+    tmp_path: Path,
+):
+    roadmap = [
+        {
+            "id": "P0",
+            "title": "Foundation",
+            "stages": [
+                "BOOT",
+                "CONFIG",
+            ],
+            "acceptance_criteria": {
+                "BOOT": [
+                    "Application starts successfully",
+                    "Health check passes",
+                ],
+                "CONFIG": [
+                    "Configuration is validated",
+                ],
+                "UNKNOWN": [
+                    "Must be ignored",
+                ],
+            },
+        }
+    ]
+
+    summary = initialize_project_state(
+        str(tmp_path),
+        roadmap,
+    )
+
+    assert summary[
+        "current_acceptance_criteria"
+    ] == [
+        "Application starts successfully",
+        "Health check passes",
+    ]
+
+    state = load_project_state(
+        str(tmp_path)
+    )
+
+    assert state is not None
+
+    phase = state["roadmap"][0]
+
+    assert phase[
+        "acceptance_criteria"
+    ] == {
+        "BOOT": [
+            "Application starts successfully",
+            "Health check passes",
+        ],
+        "CONFIG": [
+            "Configuration is validated",
+        ],
+    }
+
+    rendered = (
+        tmp_path /
+        ".ai-workflow" /
+        "ROADMAP.md"
+    ).read_text(
+        encoding="utf-8"
+    )
+
+    assert (
+        "Acceptance: Application starts successfully"
+        in rendered
+    )
+
+    assert (
+        "Acceptance: Health check passes"
+        in rendered
+    )
+
+    assert (
+        "Must be ignored"
+        not in rendered
+    )
+
+
+def test_advance_updates_current_acceptance_criteria(
+    tmp_path: Path,
+):
+    roadmap = [
+        {
+            "id": "P0",
+            "title": "Foundation",
+            "stages": [
+                "BOOT",
+                "CONFIG",
+            ],
+            "acceptance_criteria": {
+                "BOOT": [
+                    "Boot criterion",
+                ],
+                "CONFIG": [
+                    "Config criterion",
+                ],
+            },
+        }
+    ]
+
+    initial = initialize_project_state(
+        str(tmp_path),
+        roadmap,
+    )
+
+    assert initial[
+        "current_acceptance_criteria"
+    ] == [
+        "Boot criterion",
+    ]
+
+    advanced = advance_project_state(
+        str(tmp_path),
+        "P0",
+        "CONFIG",
+    )
+
+    assert advanced[
+        "current_acceptance_criteria"
+    ] == [
+        "Config criterion",
+    ]

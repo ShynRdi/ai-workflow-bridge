@@ -15,6 +15,124 @@ HISTORY_FILE = "HISTORY.md"
 STATE_BEGIN = "<!-- AI_WORKFLOW_STATE_BEGIN -->"
 STATE_END = "<!-- AI_WORKFLOW_STATE_END -->"
 
+MAX_ACCEPTANCE_CRITERIA_PER_STAGE = 20
+MAX_ACCEPTANCE_CRITERION_CHARS = 500
+
+
+def normalize_roadmap(
+    roadmap: list[dict[str, Any]] | None,
+) -> list[dict[str, Any]]:
+    normalized: list[dict[str, Any]] = []
+
+    for raw_phase in roadmap or []:
+        if not isinstance(
+            raw_phase,
+            dict,
+        ):
+            continue
+
+        phase_id = str(
+            raw_phase.get("id")
+            or ""
+        ).strip()
+
+        if not phase_id:
+            continue
+
+        title = str(
+            raw_phase.get("title")
+            or ""
+        ).strip()
+
+        stages = [
+            str(value).strip()
+            for value in (
+                raw_phase.get("stages")
+                or []
+            )
+            if str(value).strip()
+        ]
+
+        raw_criteria = (
+            raw_phase.get(
+                "acceptance_criteria"
+            )
+            or {}
+        )
+
+        criteria: dict[str, list[str]] = {}
+
+        if isinstance(
+            raw_criteria,
+            dict,
+        ):
+            for stage in stages:
+                values = raw_criteria.get(
+                    stage
+                )
+
+                if isinstance(
+                    values,
+                    str,
+                ):
+                    values = [
+                        values
+                    ]
+
+                if not isinstance(
+                    values,
+                    list,
+                ):
+                    continue
+
+                cleaned: list[str] = []
+
+                for value in values:
+                    criterion = str(
+                        value
+                        or ""
+                    ).strip()
+
+                    if not criterion:
+                        continue
+
+                    criterion = criterion[
+                        :MAX_ACCEPTANCE_CRITERION_CHARS
+                    ]
+
+                    if criterion not in cleaned:
+                        cleaned.append(
+                            criterion
+                        )
+
+                    if (
+                        len(cleaned)
+                        >= MAX_ACCEPTANCE_CRITERIA_PER_STAGE
+                    ):
+                        break
+
+                if cleaned:
+                    criteria[
+                        stage
+                    ] = cleaned
+
+        phase: dict[str, Any] = {
+            "id": phase_id,
+            "title": title,
+            "stages": stages,
+        }
+
+        if criteria:
+            phase[
+                "acceptance_criteria"
+            ] = criteria
+
+        normalized.append(
+            phase
+        )
+
+    return normalized
+
 
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -210,6 +328,74 @@ def _next_pair(state: dict[str, Any]) -> tuple[str, str] | None:
     return positions[index + 1] if index + 1 < len(positions) else None
 
 
+def _acceptance_criteria(
+    state: dict[str, Any],
+    position: tuple[str, str] | None,
+) -> list[str]:
+    if not position:
+        return []
+
+    phase_id, stage = position
+
+    for phase in (
+        state.get("roadmap")
+        or []
+    ):
+        if not isinstance(
+            phase,
+            dict,
+        ):
+            continue
+
+        if (
+            str(
+                phase.get("id")
+                or ""
+            ).strip()
+            != phase_id
+        ):
+            continue
+
+        raw = (
+            phase.get(
+                "acceptance_criteria"
+            )
+            or {}
+        )
+
+        if not isinstance(
+            raw,
+            dict,
+        ):
+            return []
+
+        values = raw.get(
+            stage
+        )
+
+        if isinstance(
+            values,
+            str,
+        ):
+            values = [
+                values
+            ]
+
+        if not isinstance(
+            values,
+            list,
+        ):
+            return []
+
+        return [
+            str(value).strip()
+            for value in values
+            if str(value).strip()
+        ]
+
+    return []
+
+
 def _render_roadmap(state: dict[str, Any]) -> str:
     roadmap = list(state.get("roadmap") or [])
     completed = set(_completed_pairs(state))
@@ -244,6 +430,17 @@ def _render_roadmap(state: dict[str, Any]) -> str:
             pair = (phase_id, stage)
             marker = "x" if pair in completed else ">" if pair == current else " "
             lines.append(f"- [{marker}] `{_label(pair)}`")
+
+            criteria = _acceptance_criteria(
+                state,
+                pair,
+            )
+
+            for criterion in criteria:
+                lines.append(
+                    f"  - Acceptance: {criterion}"
+                )
+
         lines.append("")
 
     machine = json.dumps(state, ensure_ascii=False, indent=2, sort_keys=True)
@@ -306,6 +503,12 @@ def project_state_summary(workspace_root: str, state: dict[str, Any] | None = No
         "next": {"phase": nxt[0], "stage": nxt[1], "label": _label(nxt)} if nxt else None,
         "completed": len(completed),
         "total": len(positions),
+        "current_acceptance_criteria": (
+            _acceptance_criteria(
+                state,
+                current,
+            )
+        ),
         "control_dir": str(control),
         "roadmap_path": str(roadmap_path),
         "history_path": str(history_path),
@@ -319,6 +522,10 @@ def initialize_project_state(
     preferred_stage: str = "",
     reason: str = "project planned",
 ) -> dict[str, Any]:
+    roadmap = normalize_roadmap(
+        roadmap
+    )
+
     positions = _positions(roadmap)
     if not positions:
         raise ValueError("Roadmap has no executable phase/stage positions")
@@ -419,7 +626,14 @@ def apply_course_change(
             raise ValueError("Project-local roadmap state is not initialized")
         return initialize_project_state(workspace_root, replacement_roadmap, proposed_phase, proposed_stage, reason=summary)
 
-    roadmap = list(replacement_roadmap or state.get("roadmap") or [])
+    roadmap = normalize_roadmap(
+        list(
+            replacement_roadmap
+            or state.get("roadmap")
+            or []
+        )
+    )
+
     positions = _positions(roadmap)
     if not positions:
         raise ValueError("Approved replacement roadmap has no positions")
