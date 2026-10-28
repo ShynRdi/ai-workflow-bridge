@@ -2,6 +2,19 @@
 
 All notable public changes will be documented here. This project follows Semantic Versioning where Chrome extension version constraints allow it.
 
+## [Unreleased]
+
+### Git-aware checkpoint review
+
+- Checkpoints now capture read-only Git evidence for HEAD, branch or detached state, dirty state, staged changes, unstaged changes, untracked files and conflicts.
+- Git comparison uses digests for index and worktree evidence rather than persisting source diff contents.
+- After workspace rollback, the Bridge compares current Git state with the pre-mutation checkpoint and flags divergence for human review.
+- Rollback never rewrites .git, HEAD, refs or the Git index.
+- Mission Control exposes sanitized Git checkpoint evidence and post-rollback review status.
+- Checkpoint acceptance and rollback actions are bound to the exact displayed checkpoint_id.
+- A stale or mismatched checkpoint identity fails closed.
+- Git inspection failure does not turn a successful workspace-file restore into a failed rollback; manual Git review is required instead.
+
 ## [0.3.4] - 2026-10-27
 
 ### Checkpoint and rollback

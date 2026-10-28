@@ -36,24 +36,6 @@ class CheckpointControlMixin:
             ).expanduser().resolve()
         )
 
-    def _latest_ready_checkpoint(
-        self,
-    ) -> dict[str, Any] | None:
-        workspace = (
-            self._checkpoint_workspace()
-        )
-
-        items = self.store.list_checkpoints(
-            workspace_root=workspace,
-            status="ready",
-            limit=1,
-        )
-
-        if not items:
-            return None
-
-        return items[0]
-
     def _ready_checkpoint_by_id(
         self,
         checkpoint_id: str,

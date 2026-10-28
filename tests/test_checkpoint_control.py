@@ -244,7 +244,7 @@ class Bridge(
         }
 
 
-def test_accept_latest_checkpoint(
+def test_accept_checkpoint_by_exact_id(
     tmp_path,
 ):
     payload = checkpoint(

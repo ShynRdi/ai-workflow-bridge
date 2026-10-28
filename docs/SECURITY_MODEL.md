@@ -61,6 +61,12 @@ Rollback is always an explicit human action. It cannot run while a local command
 
 Checkpoint restore validates archive integrity, member paths and member types before restoring captured workspace files. Interrupted rollback is treated as uncertain state and is never automatically retried after restart.
 
+Checkpoint metadata also records read-only Git evidence. This includes repository, branch, HEAD and coarse dirty, index and working-tree indicators. Comparison digests are stored instead of raw source diff contents.
+
+After rollback, the Bridge re-inspects Git state and reports whether HEAD, branch, index or working-tree status differs from the checkpoint. This is advisory human-review evidence only. The rollback engine never performs Git reset, checkout, index restoration, ref rewriting or other Git repair.
+
+Checkpoint acceptance and rollback requests include the exact checkpoint identity shown to the user. A stale or mismatched checkpoint identity fails closed rather than applying the action to whichever checkpoint happens to be newest.
+
 ### Diagnostics
 
 System diagnostics are designed as read-only health inspection. Running diagnostics does not request new provider permissions, inject a content script, submit an LLM prompt or execute a project command.
@@ -74,6 +80,8 @@ Diagnostics may report a warning when a provider tab/content script is unavailab
 A checkpoint covers only the captured workspace-file scope. It does not restore Git metadata or history under `.git`, native-owned `.ai-workflow` state, excluded volatile directories, remote or API effects, database state, system package changes, or other external side effects.
 
 A crash during rollback may leave the workspace in an uncertain partially restored state. The Bridge therefore requires explicit recovery review instead of automatically retrying rollback.
+
+Git-aware review does not make Git metadata transactional. A workspace-file rollback can restore visible file contents while the Git index, HEAD, branch or refs still reflect post-checkpoint operations. Such divergence is reported for manual review rather than automatically repaired.
 
 ### No OS sandbox
 
