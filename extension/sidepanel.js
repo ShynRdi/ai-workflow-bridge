@@ -178,6 +178,122 @@ function formatCheckpointBytes(value) {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MiB`;
 }
 
+function gitBooleanLabel(value) {
+  if (value === true) return "YES";
+  if (value === false) return "NO";
+  return "UNKNOWN";
+}
+
+function renderCheckpointGit(checkpoint = {}) {
+  const git =
+    checkpoint.git || {};
+
+  const isGit =
+    git.is_git === true;
+
+  $("checkpointGitState").textContent =
+    isGit
+      ? (
+          git.detached
+            ? "GIT · DETACHED"
+            : "GIT"
+        )
+      : "NOT A GIT WORKSPACE";
+
+  $("checkpointGitBranch").textContent =
+    isGit
+      ? (
+          git.branch ||
+          "(detached)"
+        )
+      : "—";
+
+  $("checkpointGitHead").textContent =
+    isGit
+      ? (
+          git.head_short ||
+          "unknown"
+        )
+      : "—";
+
+  $("checkpointGitDirty").textContent =
+    isGit
+      ? gitBooleanLabel(
+          git.dirty
+        )
+      : "—";
+
+  $("checkpointGitStaged").textContent =
+    isGit
+      ? gitBooleanLabel(
+          git.has_staged_changes
+        )
+      : "—";
+
+  $("checkpointGitUnstaged").textContent =
+    isGit
+      ? gitBooleanLabel(
+          git.has_unstaged_changes
+        )
+      : "—";
+
+  $("checkpointGitUntracked").textContent =
+    isGit
+      ? gitBooleanLabel(
+          git.has_untracked_files
+        )
+      : "—";
+
+  const reviewBox =
+    $("checkpointGitReview");
+
+  const review =
+    checkpoint.git_review || {};
+
+  const reviewAvailable =
+    checkpoint.git_review_available === true;
+
+  reviewBox.classList.toggle(
+    "hidden",
+    !reviewAvailable,
+  );
+
+  if (!reviewAvailable) {
+    $("checkpointGitReviewStatus").textContent =
+      "NO POST-ROLLBACK REVIEW";
+
+    $("checkpointGitReviewDetail").textContent =
+      "";
+
+    return;
+  }
+
+  const required =
+    review.requires_git_review === true;
+
+  $("checkpointGitReviewStatus").textContent =
+    required
+      ? "⚠ GIT REVIEW REQUIRED"
+      : "✓ GIT EVIDENCE MATCHES";
+
+  const pieces = [
+    `HEAD changed: ${gitBooleanLabel(review.head_changed)}`,
+    `branch changed: ${gitBooleanLabel(review.branch_changed)}`,
+    `index changed: ${gitBooleanLabel(review.index_changed)}`,
+    `workspace status changed: ${gitBooleanLabel(review.worktree_status_changed)}`,
+    "Git metadata restored: NO",
+  ];
+
+  if (review.inspection_error) {
+    pieces.push(
+      "Git inspection was incomplete",
+    );
+  }
+
+  $("checkpointGitReviewDetail").textContent =
+    pieces.join(" · ");
+}
+
 function renderCheckpoint(state = {}) {
   const checkpoint =
     state.checkpoint || {};
@@ -244,6 +360,10 @@ function renderCheckpoint(state = {}) {
 
   $("checkpointId").textContent =
     checkpoint.checkpoint_id || "—";
+
+  renderCheckpointGit(
+    checkpoint
+  );
 
   const limitations =
     $("checkpointLimitations");
@@ -513,7 +633,9 @@ function handleEvent(event) { if (!event) return; if (event.kind === "host_statu
     );
   } else if (event.kind === "checkpoint_rolled_back") {
     addLog(
-      "UNDO",
+      event.git_review_required
+        ? "GIT?"
+        : "UNDO",
       event.text || "Workspace checkpoint rolled back.",
     );
 
@@ -611,8 +733,21 @@ $("acceptCheckpoint").addEventListener(
         );
       }
 
+      const checkpointId = String(
+        checkpoint.checkpoint_id || "",
+      ).trim();
+
+      if (!checkpointId) {
+        throw new Error(
+          "Checkpoint identity is missing. Refresh Mission Control and retry.",
+        );
+      }
+
       await command(
         "checkpoint_accept",
+        {
+          checkpoint_id: checkpointId,
+        },
       );
 
       addLog(
@@ -675,8 +810,21 @@ $("rollbackCheckpoint").addEventListener(
         return;
       }
 
+      const checkpointId = String(
+        checkpoint.checkpoint_id || "",
+      ).trim();
+
+      if (!checkpointId) {
+        throw new Error(
+          "Checkpoint identity is missing. Refresh Mission Control and retry.",
+        );
+      }
+
       await command(
         "checkpoint_rollback",
+        {
+          checkpoint_id: checkpointId,
+        },
       );
 
       addLog(

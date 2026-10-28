@@ -25,8 +25,11 @@ This roadmap is directional and does not promise dates.
 - Crash-safe rollback lifecycle with explicit restart recovery and no automatic replay.
 - Clear rollback boundaries for Git metadata, native state and external side effects.
 
-## 0.3.5 — Diff review and acceptance criteria
+## 0.3.5 — Git-aware review, diff review and acceptance criteria
 
+- Read-only Git checkpoint evidence for HEAD, branch, dirty state, index and working-tree divergence.
+- Exact checkpoint identity binding for human accept and rollback actions.
+- Post-rollback Git review without rewriting .git, refs, HEAD or index state.
 - Structured review of changed files before stage completion.
 - Machine-readable acceptance criteria tied to roadmap stages.
 - Clear distinction between command success and product acceptance.

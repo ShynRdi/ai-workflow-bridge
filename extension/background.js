@@ -1472,22 +1472,46 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           discarded: true,
         };
       } else if (command.action === "checkpoint_accept") {
+        const checkpointId = String(
+          command.checkpoint_id || "",
+        ).trim();
+
+        if (!checkpointId) {
+          throw new Error(
+            "Checkpoint identity is missing. Refresh Mission Control and retry.",
+          );
+        }
+
         sendNative({
           type: "checkpoint_accept",
+          checkpoint_id: checkpointId,
         });
 
         return {
           ok: true,
           requested: "checkpoint_accept",
+          checkpointId,
         };
       } else if (command.action === "checkpoint_rollback") {
+        const checkpointId = String(
+          command.checkpoint_id || "",
+        ).trim();
+
+        if (!checkpointId) {
+          throw new Error(
+            "Checkpoint identity is missing. Refresh Mission Control and retry.",
+          );
+        }
+
         sendNative({
           type: "checkpoint_rollback",
+          checkpoint_id: checkpointId,
         });
 
         return {
           ok: true,
           requested: "checkpoint_rollback",
+          checkpointId,
         };
       } else if (command.action === "diagnostics") {
         return {

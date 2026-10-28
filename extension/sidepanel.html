@@ -61,6 +61,69 @@
           <code id="checkpointId">—</code>
         </p>
 
+        <div id="checkpointGitBlock">
+          <b>Git evidence</b>
+
+          <div class="recovery-approvals">
+            <div class="recovery-approval">
+              <small>
+                Repository:
+                <strong id="checkpointGitState">—</strong>
+              </small>
+            </div>
+
+            <div class="recovery-approval">
+              <small>
+                Branch:
+                <code id="checkpointGitBranch">—</code>
+              </small>
+            </div>
+
+            <div class="recovery-approval">
+              <small>
+                HEAD:
+                <code id="checkpointGitHead">—</code>
+              </small>
+            </div>
+
+            <div class="recovery-approval">
+              <small>
+                Dirty:
+                <strong id="checkpointGitDirty">—</strong>
+              </small>
+            </div>
+
+            <div class="recovery-approval">
+              <small>
+                Staged:
+                <strong id="checkpointGitStaged">—</strong>
+                · Unstaged:
+                <strong id="checkpointGitUnstaged">—</strong>
+                · Untracked:
+                <strong id="checkpointGitUntracked">—</strong>
+              </small>
+            </div>
+          </div>
+
+          <div
+            id="checkpointGitReview"
+            class="provider-box hidden"
+          >
+            <b id="checkpointGitReviewStatus">
+              Git review
+            </b>
+            <p
+              id="checkpointGitReviewDetail"
+              class="microcopy"
+            ></p>
+          </div>
+
+          <p class="microcopy">
+            Git evidence is read-only. Rollback never rewrites
+            HEAD, refs, index, or other .git metadata.
+          </p>
+        </div>
+
         <div>
           <b>Rollback limitations</b>
           <div id="checkpointLimitations" class="recovery-approvals">

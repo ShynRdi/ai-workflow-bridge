@@ -34,6 +34,45 @@ class FakeStore:
         self.checkpoint = checkpoint
         self.transitions = []
 
+    def get_checkpoint(
+        self,
+        checkpoint_id,
+    ):
+        if self.checkpoint is None:
+            return None
+
+        if (
+            self.checkpoint.get(
+                "checkpoint_id"
+            )
+            != checkpoint_id
+        ):
+            return None
+
+        return self.checkpoint
+
+    def put_checkpoint(
+        self,
+        payload,
+    ):
+        if self.checkpoint is None:
+            self.checkpoint = dict(
+                payload
+            )
+        else:
+            # Update in place so existing test references
+            # observe the same durable checkpoint state.
+            self.checkpoint.clear()
+            self.checkpoint.update(
+                payload
+            )
+
+        return str(
+            payload[
+                "checkpoint_id"
+            ]
+        )
+
     def list_checkpoints(
         self,
         *,
@@ -205,7 +244,7 @@ class Bridge(
         }
 
 
-def test_accept_latest_checkpoint(
+def test_accept_checkpoint_by_exact_id(
     tmp_path,
 ):
     payload = checkpoint(
@@ -228,7 +267,7 @@ def test_accept_latest_checkpoint(
     )
 
     assert (
-        bridge.accept_latest_checkpoint()
+        bridge.accept_checkpoint("cp-latest")
         is True
     )
 
@@ -281,7 +320,7 @@ def test_rollback_requires_paused_workflow(
     )
 
     assert (
-        bridge.rollback_latest_checkpoint()
+        bridge.rollback_checkpoint("cp-latest")
         is False
     )
 
@@ -324,7 +363,7 @@ def test_rollback_is_forbidden_during_command_execution(
     )
 
     assert (
-        bridge.rollback_latest_checkpoint()
+        bridge.rollback_checkpoint("cp-latest")
         is False
     )
 
@@ -426,7 +465,7 @@ def test_rollback_persists_crash_boundary_before_restore(
     )
 
     assert (
-        bridge.rollback_latest_checkpoint()
+        bridge.rollback_checkpoint("cp-latest")
         is True
     )
 
@@ -512,7 +551,7 @@ def test_rollback_failure_enters_recovery_required(
     )
 
     assert (
-        bridge.rollback_latest_checkpoint()
+        bridge.rollback_checkpoint("cp-latest")
         is False
     )
 
@@ -562,33 +601,49 @@ def test_checkpoint_message_routes_are_explicit():
         ):
             self.lifecycle = "idle"
 
-        def accept_latest_checkpoint(
+        def accept_checkpoint(
             self,
+            checkpoint_id,
         ):
             calls.append(
-                "accept"
+                (
+                    "accept",
+                    checkpoint_id,
+                )
             )
 
-        def rollback_latest_checkpoint(
+        def rollback_checkpoint(
             self,
+            checkpoint_id,
         ):
             calls.append(
-                "rollback"
+                (
+                    "rollback",
+                    checkpoint_id,
+                )
             )
 
     bridge = MessageBridge()
 
     bridge.handle({
         "type": "checkpoint_accept",
+        "checkpoint_id": "cp-explicit",
     })
 
     bridge.handle({
         "type": "checkpoint_rollback",
+        "checkpoint_id": "cp-explicit",
     })
 
     assert calls == [
-        "accept",
-        "rollback",
+        (
+            "accept",
+            "cp-explicit",
+        ),
+        (
+            "rollback",
+            "cp-explicit",
+        ),
     ]
 
 
@@ -633,7 +688,7 @@ def test_crash_after_rollback_claim_leaves_recovery_boundary(
         SystemExit,
         match="simulated process crash",
     ):
-        bridge.rollback_latest_checkpoint()
+        bridge.rollback_checkpoint("cp-latest")
 
     # The rollback was claimed, but restore never ran.
     # A restart must NOT silently retry it.
@@ -737,7 +792,7 @@ def test_crash_after_restore_before_completion_is_left_uncertain(
         SystemExit,
         match="simulated crash after restore",
     ):
-        bridge.rollback_latest_checkpoint()
+        bridge.rollback_checkpoint("cp-latest")
 
     # Workspace restore happened, but its durable completion
     # marker did not. This is deliberately an uncertain
@@ -787,15 +842,17 @@ def test_checkpoint_actions_are_blocked_during_recovery_required():
                 "recovery_required"
             )
 
-        def accept_latest_checkpoint(
+        def accept_checkpoint(
             self,
+            _checkpoint_id,
         ):
             calls.append(
                 "accept"
             )
 
-        def rollback_latest_checkpoint(
+        def rollback_checkpoint(
             self,
+            _checkpoint_id,
         ):
             calls.append(
                 "rollback"
@@ -1150,4 +1207,94 @@ def test_orchestrator_state_never_exposes_checkpoint_archive_material(
     assert (
         "/private/checkpoints"
         not in serialized
+    )
+
+
+def test_accept_rejects_stale_checkpoint_identity(
+    tmp_path,
+):
+    payload = checkpoint(
+        tmp_path
+    )
+
+    workspace = Path(
+        payload[
+            "workspace_root"
+        ]
+    )
+
+    store = FakeStore(
+        payload
+    )
+
+    bridge = Bridge(
+        workspace=workspace,
+        store=store,
+    )
+
+    assert (
+        bridge.accept_checkpoint(
+            "cp-stale"
+        )
+        is False
+    )
+
+    assert (
+        payload["status"]
+        == "ready"
+    )
+
+    assert (
+        store.transitions
+        == []
+    )
+
+
+def test_rollback_rejects_stale_checkpoint_identity(
+    monkeypatch,
+    tmp_path,
+):
+    payload = checkpoint(
+        tmp_path
+    )
+
+    workspace = Path(
+        payload[
+            "workspace_root"
+        ]
+    )
+
+    store = FakeStore(
+        payload
+    )
+
+    bridge = Bridge(
+        workspace=workspace,
+        store=store,
+    )
+
+    monkeypatch.setattr(
+        orchestrator_checkpoints,
+        "restore_workspace_snapshot",
+        lambda **_kwargs:
+        pytest.fail(
+            "stale checkpoint must never restore"
+        ),
+    )
+
+    assert (
+        bridge.rollback_checkpoint(
+            "cp-stale"
+        )
+        is False
+    )
+
+    assert (
+        payload["status"]
+        == "ready"
+    )
+
+    assert (
+        store.transitions
+        == []
     )

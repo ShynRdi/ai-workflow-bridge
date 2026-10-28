@@ -186,7 +186,18 @@ Workflow browser binding also includes conversation identity. Navigating the bou
 
 Before protected R2/R3 command execution, the native host creates a durable checkpoint of the captured workspace-file scope after required approval has been resolved and before the local command is allowed to run.
 
-Mission Control shows the latest checkpoint together with its risk level, captured file count, size, rollback scope and known limitations.
+Mission Control shows the current actionable checkpoint together with its exact checkpoint ID, risk level, captured file count, size, rollback scope, known limitations and read-only Git evidence when the workspace is a Git repository.
+
+Git evidence can show:
+
+- branch or detached state
+- HEAD
+- dirty state
+- staged changes
+- unstaged changes
+- untracked files
+
+Checkpoint actions are bound to that exact displayed checkpoint ID. If checkpoint state changes before the action reaches the native host, the action fails closed and Mission Control must be refreshed.
 
 A ready checkpoint has two explicit human actions:
 
@@ -203,6 +214,12 @@ Workspace rollback is not a universal transaction. It does **not** guarantee rev
 - system/package-manager changes.
 
 If the native host crashes while rollback is in progress, restart enters `RECOVERY_REQUIRED`. The Bridge does not automatically retry the rollback because it may be impossible to determine whether restoration had not started, had partially completed or had completed before the crash.
+
+After a successful workspace-file rollback, the Bridge compares current Git evidence with the state captured before the protected mutation. Mission Control reports whether HEAD, branch, index or working-tree status differs and whether manual Git review is required.
+
+This comparison does not repair Git. The Bridge never rewrites HEAD, refs or the index as part of checkpoint rollback. A file can therefore be restored to its pre-command contents while the Git index still contains a later staged version. This is intentionally surfaced as GIT REVIEW REQUIRED.
+
+If Git inspection itself fails after workspace restoration, the workspace rollback remains successful but the Git result is marked uncertain and manual review is required.
 
 # 3. The project lifecycle
 

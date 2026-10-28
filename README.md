@@ -47,8 +47,9 @@ Same web LLM conversation
 - Active-tab and conversation-identity binding: workflows remain attached to the explicitly selected provider tab and conversation instead of silently following browser focus or same-tab navigation.
 - Crash/restart recovery: interrupted active workflows restart in `RECOVERY_REQUIRED` and never automatically replay commands, approvals, downloads, execution cursors, or LLM prompts.
 - Protected R2/R3 execution creates a durable workspace-file checkpoint before the command receives an opportunity to mutate the project.
-- Mission Control exposes explicit checkpoint acceptance and workspace rollback controls.
-- Workspace rollback is deliberately scoped: it does not promise reversal of `.git` metadata/history, `.ai-workflow`, excluded volatile directories, remote actions, database changes or system changes.
+- Mission Control exposes explicit checkpoint acceptance and workspace rollback controls bound to the exact displayed checkpoint identity.
+- Git-aware checkpoint review records read-only HEAD, branch, dirty, index and worktree evidence and flags post-rollback divergence for human review without rewriting Git metadata.
+- Workspace rollback is deliberately scoped: it does not promise reversal of .git metadata/history, .ai-workflow, excluded volatile directories, remote actions, database changes or system changes.
 - Restart-safe provider guards and autonomy budgets: account-safety pauses and AI-turn budget state survive native-host restarts.
 - Multi-web-LLM provider registry with explicit support levels.
 - Per-provider optional Chrome site permissions.
