@@ -4,10 +4,13 @@ All notable public changes will be documented here. This project follows Semanti
 
 ## [Unreleased]
 
+## [0.3.5] - 2026-11-15
+
 ### Structured diff review and stage acceptance
 
 - Added durable, canonical structured stage reviews bound to phase, stage baseline, Git evidence, acceptance criteria, and an exact review ID.
 - Mission Control now shows changed-file statuses, baseline/current HEAD, attribution confidence, criterion assessments, freshness, and explicit **Accept Stage** / **Reject / Continue Work** actions.
+- Stage-review actions bind to the exact displayed review ID and phase/stage, so a stale panel cannot accept or reject a replacement review.
 - Immediate-next-stage contracts fail closed until the exact fresh review has explicit human acceptance; rejected, stale, legacy, and mismatched reviews cannot advance the roadmap.
 - Review inspection uses read-only Git commands and excludes native-owned `.ai-workflow` paths from product evidence.
 - Pending review state survives restart without replaying transitions or human actions; evidence changes downgrade reviews to stale.

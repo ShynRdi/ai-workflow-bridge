@@ -8,7 +8,7 @@
 
 AI Workflow Bridge lets a supported web LLM plan work, emit a structured workflow contract, receive terminal evidence, and continue a project — while a deterministic local runner enforces roadmap state, approvals, rate limits, account-safety rules, and command policy.
 
-> **Public Preview 0.3.4:** this is pre-1.0 developer tooling. It is intentionally conservative, but it is **not an OS sandbox**. Read [SECURITY.md](SECURITY.md) before using it on valuable or sensitive systems.
+> **Public Preview 0.3.5:** this is pre-1.0 developer tooling. It is intentionally conservative, but it is **not an OS sandbox**. Read [SECURITY.md](SECURITY.md) before using it on valuable or sensitive systems.
 
 ## Why this exists
 

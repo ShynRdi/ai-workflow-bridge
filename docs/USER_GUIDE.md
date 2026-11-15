@@ -1,4 +1,4 @@
-# AI Workflow Bridge 0.3.4 — Complete User Guide
+# AI Workflow Bridge 0.3.5 — Complete User Guide
 
 AI Workflow Bridge connects a web LLM conversation to a guarded local runner. The LLM plans and emits a machine-readable workflow contract; the native host executes only approved/local-safe commands, returns stdout/stderr to the same conversation, and stops whenever a human decision or provider safety condition appears.
 
@@ -96,7 +96,7 @@ The Bridge never signs in for you and never asks for your password or cookies.
 
 # 2. Site permissions
 
-Version 0.3.4 does **not** request access to every LLM website at install time.
+Version 0.3.5 does **not** request access to every LLM website at install time.
 
 Choose your Web LLM in **AI Engine + Safety**, then click:
 
