@@ -95,3 +95,31 @@ console.log(JSON.stringify({{
     ]
     assert "lastState?.project_state?.stage_review" not in handlers
     assert "actionPayload(event.currentTarget, decision)" in handlers
+
+
+def test_policy_profile_ui_uses_render_bound_revision():
+    html = (EXT / "sidepanel.html").read_text(encoding="utf-8")
+    panel = (EXT / "sidepanel.js").read_text(encoding="utf-8")
+    background = (EXT / "background.js").read_text(encoding="utf-8")
+    source = (EXT / "policy-profile-identity.js").read_text(encoding="utf-8")
+    assert 'id="policyProfileSelect"' in html
+    assert 'id="applyPolicyProfile"' in html
+    assert "This profile does not create an OS/container sandbox" in (
+        ROOT / "native_host" / "policy_profiles.py"
+    ).read_text(encoding="utf-8")
+    assert "renderPolicyProfile" in panel
+    assert 'command("policy_profile_change"' in panel
+    assert 'type: "policy_profile_change"' in background
+
+    node = f"""
+const vm = require("vm"); const context = {{}}; context.globalThis = context;
+vm.runInNewContext({json.dumps(source)}, context);
+const button = {{ dataset: {{}} }};
+context.AWB_POLICY_PROFILE_IDENTITY.bind(button, {{ revision: "revision-A", profile: "balanced" }});
+const replacement = {{ revision: "revision-B", profile: "strict" }};
+console.log(JSON.stringify({{ replacement, sent: context.AWB_POLICY_PROFILE_IDENTITY.actionPayload(button, "strict") }}));
+"""
+    completed = subprocess.run(["node", "-e", node], cwd=ROOT, text=True, capture_output=True, check=True)
+    result = json.loads(completed.stdout)
+    assert result["replacement"]["revision"] == "revision-B"
+    assert result["sent"] == {"desired_profile": "strict", "expected_policy_revision": "revision-A"}

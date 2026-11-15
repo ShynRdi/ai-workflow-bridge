@@ -624,6 +624,26 @@ function renderStageReview(projectState = {}) {
     button.disabled = !canDecide;
   }
 }
+function renderPolicyProfile(projectState = {}, state = {}) {
+  const policy = projectState.policy || null;
+  const select = $("policyProfileSelect");
+  const apply = $("applyPolicyProfile");
+  const profiles = policy?.profiles || [];
+  if (profiles.length) {
+    select.replaceChildren();
+    for (const item of profiles) { const option = document.createElement("option"); option.value = item.id; option.textContent = item.label; select.append(option); }
+  }
+  $("policyProfileCurrent").textContent = String(policy?.label || "Balanced").toUpperCase();
+  $("policyProfileDescription").textContent = policy?.description || "Recommended default. Preserves normal guarded development behavior.";
+  select.value = policy?.profile || "balanced";
+  const warning = $("policyProfileWarning"); warning.textContent = policy?.warning || ""; warning.classList.toggle("hidden", !policy?.warning);
+  const mutableLifecycles = ["setup", "ready_to_arm", "idle", "paused", "protocol_error", "protocol_blocked"];
+  const locked = !mutableLifecycles.includes(state.lifecycle || state.status) || state.command_execution_active === true || (state.pending_approvals || []).length > 0 || !policy?.revision;
+  $("policyProfileLock").textContent = locked ? "Profile changes are locked until recovery, command execution, or pending approval is resolved." : "Apply only while the workflow is paused or otherwise idle.";
+  select.disabled = locked;
+  apply.disabled = locked;
+  globalThis.AWB_POLICY_PROFILE_IDENTITY.bind(apply, locked ? null : policy);
+}
 function handleEvent(event) { if (!event) return; if (event.kind === "host_status") {
     if (event.connecting) {
       $("hostStatus").textContent = "CONNECTING";
@@ -633,7 +653,7 @@ function handleEvent(event) { if (!event) return; if (event.kind === "host_statu
       $("hostStatusDetail").textContent = event.text || "Native Messaging";
       addLog(event.connected ? "KAPOW" : "UH-OH", event.text || "Host status changed");
     }
-  } else if (event.kind === "state") { const state = event.state || {}; lastState = state; const lifecycle = state.lifecycle || state.status || "setup"; $("runStatus").textContent = String(lifecycle).replaceAll("_", " ").toUpperCase(); $("runStatusDetail").textContent = state.current_step || "No active workflow"; fillConfig(state.config || {}); fillBudget(state.budget || {}, state.config || {}); renderCheckpoint(state); renderRecovery(state); renderStageReview(state.project_state || {}); setLifecycleButtons(state); if (state.active_provider_name) { $("activeProvider").textContent = state.active_provider_name.toUpperCase().slice(0,13); $("providerDetail").textContent = "active browser adapter"; } } else if (event.kind === "recovery_resolved") {
+  } else if (event.kind === "state") { const state = event.state || {}; lastState = state; const lifecycle = state.lifecycle || state.status || "setup"; $("runStatus").textContent = String(lifecycle).replaceAll("_", " ").toUpperCase(); $("runStatusDetail").textContent = state.current_step || "No active workflow"; fillConfig(state.config || {}); fillBudget(state.budget || {}, state.config || {}); renderCheckpoint(state); renderRecovery(state); renderStageReview(state.project_state || {}); renderPolicyProfile(state.project_state || {}, state); setLifecycleButtons(state); if (state.active_provider_name) { $("activeProvider").textContent = state.active_provider_name.toUpperCase().slice(0,13); $("providerDetail").textContent = "active browser adapter"; } } else if (event.kind === "recovery_resolved") {
     $("recoveryPanel")?.classList.add("hidden");
     addLog(
       "RECOVERED",
@@ -715,6 +735,13 @@ function handleEvent(event) { if (!event) return; if (event.kind === "host_statu
 chrome.runtime.onMessage.addListener((message) => { if (message?.type === "BRIDGE_EVENT") handleEvent(message.payload); });
 populateProviders(); $("providerId").value = "chatgpt"; updateProviderCard(); $("providerId").addEventListener("change", updateProviderCard); $("providerAuto").addEventListener("change", updateProviderCard); $("modelLabel").addEventListener("input", updateProviderCard); $("grantProvider").addEventListener("click", () => grantProviderAccess().catch((e) => addLog("NOPE", e.message))); $("saveConfig").addEventListener("click", () => saveProject().then(() => setTimeout(() => command("get_state"), 200)).catch((e) => addLog("CRASH", e.message)));
 $("runDiagnostics").addEventListener("click", () => runSystemDiagnostics());
+$("applyPolicyProfile").addEventListener("click", async (event) => {
+  try {
+    const payload = globalThis.AWB_POLICY_PROFILE_IDENTITY.actionPayload(event.currentTarget, $("policyProfileSelect").value);
+    await command("policy_profile_change", payload);
+    addLog("POLICY", "Explicit policy profile change requested for the displayed project policy state.");
+  } catch (error) { addLog("CRASH", String(error?.message || error)); }
+});
 $("collectStageReview").addEventListener("click", async () => {
   try { await command("stage_review_collect"); addLog("REVIEW", "Collecting current structured Git evidence for human review."); }
   catch (error) { addLog("CRASH", String(error?.message || error)); }

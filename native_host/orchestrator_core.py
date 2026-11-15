@@ -664,6 +664,7 @@ class CoreMixin:
                 self.active_provider
             ),
             "pending_approvals": list(self.pending),
+            "command_execution_active": bool(self.command_execution_active),
             "checkpoint": checkpoint_state,
             "recovery": getattr(
                 self,
