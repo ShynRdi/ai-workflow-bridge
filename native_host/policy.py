@@ -6,6 +6,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from policy_profiles import DEFAULT_PROFILE, apply_profile, validate_profile
+
 
 RISK_ORDER = {"R0": 0, "R1": 1, "R2": 2, "R3": 3, "R4": 4}
 
@@ -15,6 +17,11 @@ class PolicyDecision:
     level: str  # low | approval | blocked
     reason: str
     risk_level: str = "R2"
+    profile: str = DEFAULT_PROFILE
+    category: str = "unknown"
+    immutable_block: bool = False
+    external_state: bool = False
+    workspace_mutation: bool = False
 
 
 @dataclass(frozen=True)
@@ -80,8 +87,19 @@ LOW_PREFIXES = (
 SAFE_PRINTENV_KEYS = {"PATH", "HOME", "SHELL", "USER", "LOGNAME", "PWD", "LANG", "LC_ALL", "NVM_DIR", "VIRTUAL_ENV"}
 
 
-def _decision(level: str, reason: str, risk_level: str) -> PolicyDecision:
-    return PolicyDecision(level=level, reason=reason, risk_level=risk_level)
+def _decision(
+    level: str,
+    reason: str,
+    risk_level: str,
+    *,
+    category: str = "unknown",
+    immutable_block: bool = False,
+    external_state: bool = False,
+) -> PolicyDecision:
+    return PolicyDecision(
+        level=level, reason=reason, risk_level=risk_level, category=category,
+        immutable_block=immutable_block, external_state=external_state,
+    )
 
 
 def _sensitive_path(command: str) -> bool:
@@ -136,16 +154,16 @@ def _path_escapes_workspace(command: str, workspace_root: str) -> bool:
     return False
 
 
-def classify(command: str, workspace_root: str = "") -> PolicyDecision:
+def _classify_base(command: str, workspace_root: str = "") -> PolicyDecision:
     normalized = " ".join(command.strip().split())
     lower = normalized.lower()
     if not normalized:
-        return _decision("blocked", "empty commands are never executed", "R4")
+        return _decision("blocked", "empty commands are never executed", "R4", immutable_block=True)
     for pattern, reason in BLOCK_PATTERNS:
         if re.search(pattern, lower):
-            return _decision("blocked", reason, "R4")
+            return _decision("blocked", reason, "R4", immutable_block=True, category="hard_block")
     if _sensitive_path(command):
-        return _decision("blocked", "command references a protected credential or account-data path", "R4")
+        return _decision("blocked", "command references a protected credential or account-data path", "R4", immutable_block=True, category="credential_path")
     if lower == "env" or lower.startswith("env "):
         return _decision("approval", "environment output may contain secrets", "R3")
     if lower.startswith("printenv"):
@@ -162,7 +180,8 @@ def classify(command: str, workspace_root: str = "") -> PolicyDecision:
         return _decision("low", "prints static text", "R0")
     for pattern, reason, risk_level in APPROVAL_PATTERNS:
         if re.search(pattern, lower):
-            return _decision("approval", reason, risk_level)
+            category = "remote_git" if "git push" in pattern else "external_machine" if "ssh" in pattern else "external_state"
+            return _decision("approval", reason, risk_level, category=category, external_state=risk_level == "R3")
     if _secretish_workspace_reference(command):
         return _decision("approval", "command references a file that commonly contains secrets", "R3")
     if lower.startswith("find ") and re.search(r"(?:^|\s)-(?:delete|exec|execdir|ok|okdir)(?:\s|$)", lower):
@@ -179,6 +198,20 @@ def classify(command: str, workspace_root: str = "") -> PolicyDecision:
     if lower.startswith("./") or lower.startswith("bash ") or lower.startswith("sh "):
         return _decision("approval", "local script execution can modify the workspace", "R2")
     return _decision("approval", "command is not in the low-risk allowlist", "R2")
+
+
+def classify(
+    command: str,
+    workspace_root: str = "",
+    profile: str = DEFAULT_PROFILE,
+) -> PolicyDecision:
+    """Classify through the centralized profile resolver; Balanced is legacy-compatible."""
+    return apply_profile(
+        validate_profile(profile),
+        command,
+        workspace_root,
+        _classify_base(command, workspace_root),
+    )
 
 
 def _llm_level(assessment: Any) -> str | None:
