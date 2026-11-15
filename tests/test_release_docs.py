@@ -124,3 +124,27 @@ def test_unreleased_git_aware_checkpoint_docs_preserve_safety_boundary():
     assert "git review required" in guide_lower
     assert "never rewrites head" in guide_lower
     assert "manual git review is required" in guide_lower
+
+
+def test_unreleased_structured_review_docs_preserve_human_gate():
+    combined = "\n".join(
+        (ROOT / name).read_text(encoding="utf-8")
+        for name in [
+            "README.md",
+            "CHANGELOG.md",
+            "docs/ROADMAP.md",
+            "docs/SECURITY_MODEL.md",
+            "docs/USER_GUIDE.md",
+        ]
+    ).lower()
+
+    for phrase in [
+        "structured stage",
+        "accept stage",
+        "exact review",
+        "stale",
+        "command success",
+        ".ai-workflow",
+        "read-only git",
+    ]:
+        assert phrase in combined

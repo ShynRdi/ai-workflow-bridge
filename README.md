@@ -43,6 +43,8 @@ Same web LLM conversation
 - **Plan → Arm → Run → Change Course → Finish** project lifecycle.
 - Project-local canonical roadmap stored in `<workspace>/.ai-workflow/ROADMAP.md`, with lifecycle history in `HISTORY.md`.
 - Canonical roadmap progress bar showing completed and remaining stages.
+- Structured stage diff review binds acceptance criteria, changed-file evidence, baseline/current Git identity, and an exact review ID to the current canonical stage.
+- A stage cannot advance until a human explicitly accepts its fresh review; LLM prose and command exit status are never acceptance.
 - Read-only system diagnostics for native-host, workspace, Git, extension, provider permission, active tab, content-script and version health.
 - Active-tab and conversation-identity binding: workflows remain attached to the explicitly selected provider tab and conversation instead of silently following browser focus or same-tab navigation.
 - Crash/restart recovery: interrupted active workflows restart in `RECOVERY_REQUIRED` and never automatically replay commands, approvals, downloads, execution cursors, or LLM prompts.

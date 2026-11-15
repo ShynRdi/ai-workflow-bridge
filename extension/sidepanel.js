@@ -596,6 +596,30 @@ function setLifecycleButtons(state) {
 }
 function fillConfig(config) { if (config.project_name != null) $("projectName").value = config.project_name; if (config.project_goal != null) $("projectGoal").value = config.project_goal; if (config.workspace_root != null) $("workspaceRoot").value = config.workspace_root; if (config.provider_id && utils.getProvider(config.provider_id)) $("providerId").value = config.provider_id; if (config.model_label != null) $("modelLabel").value = config.model_label; $("providerAuto").checked = config.provider_mode === "auto"; $("autoRunLowRisk").checked = config.auto_run_low_risk !== false; if (config.min_turn_interval_seconds != null) $("minTurnInterval").value = config.min_turn_interval_seconds; if (config.max_turns_per_hour != null) $("maxTurnsHour").value = config.max_turns_per_hour; if (config.max_turns_per_session != null) $("maxTurnsSession").value = config.max_turns_per_session; if (config.max_runtime_minutes != null) $("maxRuntimeMinutes").value = config.max_runtime_minutes; if (config.bot_configured && !$("botToken").value) $("botToken").placeholder = "Configured locally — enter only to replace"; if (config.chat_id != null) $("chatId").value = config.chat_id; updateProviderCard(); }
 function fillBudget(budget = {}, config = {}) { $("budgetTurns").textContent = `${budget.session_turns || 0} / ${config.max_turns_per_session || 25}`; $("budgetHour").textContent = `${budget.turns_last_hour || 0} / ${config.max_turns_per_hour || 20}`; $("budgetRuntime").textContent = `${Math.round(budget.runtime_minutes || 0)} / ${config.max_runtime_minutes || 90}m`; $("budgetCooldown").textContent = budget.cooldown_until ? "PAUSED" : "READY"; }
+function renderStageReview(projectState = {}) {
+  const review = projectState.stage_review || null;
+  const current = projectState.current?.label || "No current canonical stage";
+  $("stageReviewStage").textContent = current;
+  $("stageReviewStatus").textContent = String(review?.status || "not_collected").replaceAll("_", " ").toUpperCase();
+  $("stageReviewDetails").classList.toggle("hidden", !review);
+  $("stageReviewId").textContent = review?.review_id || "—";
+  $("stageReviewHeads").textContent = review ? `${review.baseline_head || "none"} → ${review.current_head || "none"}` : "—";
+  $("stageReviewBranch").textContent = review?.branch || "—";
+  $("stageReviewAttribution").textContent = review ? (review.attribution_exact ? "EXACT" : "CONSERVATIVE") : "—";
+  $("stageReviewCount").textContent = String(review?.changed_file_count || review?.changed_file_evidence?.total_files || 0);
+  const stale = $("stageReviewStale");
+  stale.textContent = review?.evidence_freshness === "stale" ? `STALE: ${review.stale_reason || "refresh evidence before deciding."}` : "";
+  stale.classList.toggle("hidden", review?.evidence_freshness !== "stale");
+  const criteria = $("stageReviewCriteria"); criteria.replaceChildren();
+  for (const item of (review?.criterion_assessments || [])) { const row = document.createElement("div"); row.className = "recovery-approval"; row.textContent = `${String(item.status || "unassessed").toUpperCase()} · ${item.criterion || "criterion"}`; criteria.append(row); }
+  if (!criteria.children.length) { const row = document.createElement("div"); row.className = "diagnostic-empty"; row.textContent = "No canonical acceptance criteria declared."; criteria.append(row); }
+  const files = $("stageReviewFiles"); files.replaceChildren();
+  for (const item of (review?.changed_file_evidence?.files || [])) { const row = document.createElement("div"); row.className = "recovery-approval"; row.textContent = `${item.status || "?"} · ${item.previous_path ? `${item.previous_path} → ` : ""}${item.path || ""}`; files.append(row); }
+  if (!files.children.length) { const row = document.createElement("div"); row.className = "diagnostic-empty"; row.textContent = "No changed product files reported."; files.append(row); }
+  const canDecide = Boolean(review?.review_id) && review?.evidence_freshness === "fresh" && review?.status === "review_required";
+  $("acceptStageReview").disabled = !canDecide;
+  $("rejectStageReview").disabled = !canDecide;
+}
 function handleEvent(event) { if (!event) return; if (event.kind === "host_status") {
     if (event.connecting) {
       $("hostStatus").textContent = "CONNECTING";
@@ -605,7 +629,7 @@ function handleEvent(event) { if (!event) return; if (event.kind === "host_statu
       $("hostStatusDetail").textContent = event.text || "Native Messaging";
       addLog(event.connected ? "KAPOW" : "UH-OH", event.text || "Host status changed");
     }
-  } else if (event.kind === "state") { const state = event.state || {}; lastState = state; const lifecycle = state.lifecycle || state.status || "setup"; $("runStatus").textContent = String(lifecycle).replaceAll("_", " ").toUpperCase(); $("runStatusDetail").textContent = state.current_step || "No active workflow"; fillConfig(state.config || {}); fillBudget(state.budget || {}, state.config || {}); renderCheckpoint(state); renderRecovery(state); setLifecycleButtons(state); if (state.active_provider_name) { $("activeProvider").textContent = state.active_provider_name.toUpperCase().slice(0,13); $("providerDetail").textContent = "active browser adapter"; } } else if (event.kind === "recovery_resolved") {
+  } else if (event.kind === "state") { const state = event.state || {}; lastState = state; const lifecycle = state.lifecycle || state.status || "setup"; $("runStatus").textContent = String(lifecycle).replaceAll("_", " ").toUpperCase(); $("runStatusDetail").textContent = state.current_step || "No active workflow"; fillConfig(state.config || {}); fillBudget(state.budget || {}, state.config || {}); renderCheckpoint(state); renderRecovery(state); renderStageReview(state.project_state || {}); setLifecycleButtons(state); if (state.active_provider_name) { $("activeProvider").textContent = state.active_provider_name.toUpperCase().slice(0,13); $("providerDetail").textContent = "active browser adapter"; } } else if (event.kind === "recovery_resolved") {
     $("recoveryPanel")?.classList.add("hidden");
     addLog(
       "RECOVERED",
@@ -687,6 +711,20 @@ function handleEvent(event) { if (!event) return; if (event.kind === "host_statu
 chrome.runtime.onMessage.addListener((message) => { if (message?.type === "BRIDGE_EVENT") handleEvent(message.payload); });
 populateProviders(); $("providerId").value = "chatgpt"; updateProviderCard(); $("providerId").addEventListener("change", updateProviderCard); $("providerAuto").addEventListener("change", updateProviderCard); $("modelLabel").addEventListener("input", updateProviderCard); $("grantProvider").addEventListener("click", () => grantProviderAccess().catch((e) => addLog("NOPE", e.message))); $("saveConfig").addEventListener("click", () => saveProject().then(() => setTimeout(() => command("get_state"), 200)).catch((e) => addLog("CRASH", e.message)));
 $("runDiagnostics").addEventListener("click", () => runSystemDiagnostics());
+$("collectStageReview").addEventListener("click", async () => {
+  try { await command("stage_review_collect"); addLog("REVIEW", "Collecting current structured Git evidence for human review."); }
+  catch (error) { addLog("CRASH", String(error?.message || error)); }
+});
+for (const [id, decision] of [["acceptStageReview", "accept"], ["rejectStageReview", "reject"]]) {
+  $(id).addEventListener("click", async () => {
+    try {
+      const reviewId = String(lastState?.project_state?.stage_review?.review_id || "").trim();
+      if (!reviewId) throw new Error("Review identity is missing. Refresh Mission Control and retry.");
+      await command("stage_review_decision", { review_id: reviewId, decision });
+      addLog(decision === "accept" ? "ACCEPT" : "CONTINUE", decision === "accept" ? "Stage acceptance requested for the displayed review." : "Continue-work decision requested for the displayed review.");
+    } catch (error) { addLog("CRASH", String(error?.message || error)); }
+  });
+}
 
 $("prepareRecovery").addEventListener("click", async () => {
   try {

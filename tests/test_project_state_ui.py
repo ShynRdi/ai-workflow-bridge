@@ -32,3 +32,16 @@ def test_native_orchestrator_owns_phase_stage_and_roadmap():
     assert 'for key in ("phase", "stage", "roadmap")' in orchestrator
     assert ".ai-workflow lifecycle documents are native-host owned" in project_state
     assert "advance_project_state" in project_state
+
+
+def test_stage_review_ui_uses_native_review_identity():
+    html = (EXT / "sidepanel.html").read_text()
+    panel = (EXT / "sidepanel.js").read_text()
+    background = (EXT / "background.js").read_text()
+
+    assert 'id="acceptStageReview"' in html
+    assert 'id="rejectStageReview"' in html
+    assert "stage_review" in panel
+    assert "review_id" in panel
+    assert 'command("stage_review_decision"' in panel
+    assert 'type: "stage_review_decision"' in background

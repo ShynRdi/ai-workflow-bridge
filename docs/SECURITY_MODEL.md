@@ -67,6 +67,14 @@ After rollback, the Bridge re-inspects Git state and reports whether HEAD, branc
 
 Checkpoint acceptance and rollback requests include the exact checkpoint identity shown to the user. A stale or mismatched checkpoint identity fails closed rather than applying the action to whichever checkpoint happens to be newest.
 
+### Structured stage diff review
+
+Before an immediate-next-stage transition, the Bridge collects a bounded structured review for the canonical current stage. It records acceptance criteria, changed-file statuses, baseline/current HEAD and branch, attribution confidence, and a unique review identity; it does not persist raw source diffs.
+
+The native host recomputes freshness from read-only Git inspection. A changed branch, baseline, HEAD, worktree evidence, or stage identity makes the review stale. Native-owned `.ai-workflow` paths are excluded from product change evidence. Only an explicit human acceptance of the exact fresh review permits the transition. LLM text, confidence, command output, and successful exit codes are evidence inputs, never product acceptance.
+
+Review collection and inspection use only read-only Git operations. Checkpoint rollback remains workspace-file-only and never rewrites Git refs, HEAD, index, or other metadata.
+
 ### Diagnostics
 
 System diagnostics are designed as read-only health inspection. Running diagnostics does not request new provider permissions, inject a content script, submit an LLM prompt or execute a project command.

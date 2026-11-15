@@ -33,6 +33,7 @@ This roadmap is directional and does not promise dates.
 - Structured review of changed files before stage completion.
 - Machine-readable acceptance criteria tied to roadmap stages.
 - Clear distinction between command success and product acceptance.
+- Durable exact-review identity, explicit human accept/reject controls, stale-evidence blocking, and restart-safe pending review recovery.
 
 ## 0.3.6 — Security policy profiles
 
