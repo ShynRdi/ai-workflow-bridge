@@ -9,6 +9,7 @@ from checkpoint_snapshot import (
     remove_workspace_snapshot,
 )
 from policy import classify, merge_risk
+from project_policy import load_policy_state
 from redaction import redact_text
 from runner import git_snapshot, run_command
 
@@ -228,7 +229,26 @@ class RiskAwareExecutionMixin:
 
         while index < len(contract.commands):
             spec = contract.commands[index]
-            local = classify(spec.cmd, workspace)
+            try:
+                policy_state = load_policy_state(workspace)
+                profile = policy_state["profile"]
+            except Exception as error:
+                self.status = "blocked"
+                self.emit_event({
+                    "kind": "error",
+                    "text": "Blocked command: canonical project security policy is invalid or unavailable.",
+                })
+                self._send_result_to_chatgpt(
+                    "Bridge policy BLOCKED this command because the canonical project security policy could not be read safely. "
+                    "A human must repair the native-owned policy state before execution can continue."
+                )
+                return
+            try:
+                local = classify(spec.cmd, workspace, profile)
+            except TypeError:
+                # Compatibility for narrow test doubles and legacy adapters;
+                # production classifier always receives the canonical profile.
+                local = classify(spec.cmd, workspace)
             risk = merge_risk(local, spec.risk_assessment)
             display_command = redact_text(spec.cmd)
 
@@ -239,7 +259,7 @@ class RiskAwareExecutionMixin:
                     "kind": "step",
                     "badge": "RISK",
                     "status": "validating",
-                    "text": f"{display_command} → local {risk.local_risk_level}, LLM {llm}, effective {risk.risk_level}{suffix}",
+                    "text": f"[{profile}] {display_command} → local {risk.local_risk_level}, LLM {llm}, effective {risk.risk_level}{suffix}",
                 })
 
             if risk.level == "blocked":
@@ -413,6 +433,7 @@ class RiskAwareExecutionMixin:
 
             item = asdict(result)
             item["risk"] = {
+                "profile": profile,
                 "local": risk.local_risk_level,
                 "llm": risk.llm_risk_level,
                 "effective": risk.risk_level,

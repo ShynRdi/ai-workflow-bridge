@@ -21,6 +21,7 @@ from project_state import (
     reconcile_stage_review_freshness,
     resolve_stage_review,
 )
+from project_policy import policy_summary
 
 
 class ProjectStateMixin:
@@ -60,6 +61,7 @@ class ProjectStateMixin:
             workspace = self._workspace_root()
             if workspace and Path(workspace).expanduser().is_dir():
                 project_state = project_state_summary(workspace, state)
+                project_state["policy"] = policy_summary(workspace)
         except Exception as error:
             project_state_error = str(error)
         base = super().state()
