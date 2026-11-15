@@ -243,12 +243,7 @@ class RiskAwareExecutionMixin:
                     "A human must repair the native-owned policy state before execution can continue."
                 )
                 return
-            try:
-                local = classify(spec.cmd, workspace, profile)
-            except TypeError:
-                # Compatibility for narrow test doubles and legacy adapters;
-                # production classifier always receives the canonical profile.
-                local = classify(spec.cmd, workspace)
+            local = classify(spec.cmd, workspace, profile)
             risk = merge_risk(local, spec.risk_assessment)
             display_command = redact_text(spec.cmd)
 

@@ -68,7 +68,7 @@ def test_r2_checkpoint_is_durable_before_command_execution(
     monkeypatch.setattr(
         orchestrator_risk,
         "classify",
-        lambda _cmd, _workspace:
+        lambda _cmd, _workspace, _profile:
         SimpleNamespace(level="approval"),
     )
 
@@ -228,7 +228,7 @@ def test_checkpoint_failure_prevents_command_execution(
     monkeypatch.setattr(
         orchestrator_risk,
         "classify",
-        lambda _cmd, _workspace:
+        lambda _cmd, _workspace, _profile:
         SimpleNamespace(level="approval"),
     )
 
@@ -354,7 +354,7 @@ def test_r0_command_does_not_create_checkpoint(
     monkeypatch.setattr(
         orchestrator_risk,
         "classify",
-        lambda _cmd, _workspace:
+        lambda _cmd, _workspace, _profile:
         SimpleNamespace(level="low"),
     )
 
@@ -462,7 +462,7 @@ def test_checkpoint_waits_until_required_approval(
     monkeypatch.setattr(
         orchestrator_risk,
         "classify",
-        lambda _cmd, _workspace:
+        lambda _cmd, _workspace, _profile:
         SimpleNamespace(level="approval"),
     )
 
@@ -660,7 +660,7 @@ def test_command_execution_flag_is_active_only_inside_execution_window(
     monkeypatch.setattr(
         orchestrator_risk,
         "classify",
-        lambda _cmd, _workspace:
+        lambda _cmd, _workspace, _profile:
         SimpleNamespace(
             level="low",
         ),
