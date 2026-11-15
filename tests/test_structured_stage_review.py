@@ -12,6 +12,7 @@ sys.path.insert(0, str(HOST))
 
 from project_state import (
     advance_project_state,
+    apply_course_change,
     collect_stage_review,
     initialize_project_state,
     load_project_state,
@@ -91,4 +92,25 @@ def test_rejected_review_blocks_transition_and_control_files_are_excluded(tmp_pa
     assert rejected["status"] == "rejected"
     with pytest.raises(ValueError, match="structured review"):
         advance_project_state(str(repo), "P0", "TWO")
+
+
+def test_review_collection_is_read_only_and_course_change_replaces_review(tmp_path: Path):
+    repo = repo_with_stage(tmp_path)
+    before_head = git(repo, "rev-parse", "HEAD")
+    before_status = git(repo, "status", "--porcelain=v1")
+    review = collect_stage_review(str(repo))
+    assert git(repo, "rev-parse", "HEAD") == before_head
+    assert git(repo, "status", "--porcelain=v1") == before_status
+
+    apply_course_change(
+        str(repo),
+        [{"id": "P1", "title": "Replacement", "stages": ["NEW"]}],
+        "P1", "NEW",
+        summary="replace reviewed work",
+    )
+    summary = project_state_summary(str(repo))
+    assert summary["current"]["label"] == "P1 / NEW"
+    assert summary["stage_review"] is None
+    with pytest.raises(ValueError, match="identity"):
+        resolve_stage_review(str(repo), review["review_id"], "accept")
 
