@@ -12,6 +12,7 @@ RECOVERY_LIFECYCLES = {
     "finishing",
     "recovering",
     "recovery_required",
+    "review_required",
 }
 
 RECOVERY_STATUSES = {
@@ -26,6 +27,7 @@ RECOVERY_STATUSES = {
     "finishing",
     "recovering",
     "recovery_required",
+    "review_required",
     "cooldown",
 }
 

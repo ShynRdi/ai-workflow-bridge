@@ -26,8 +26,10 @@ from git_evidence import (
 from project_state import (
     advance_project_state,
     apply_course_change,
+    collect_stage_review,
     initialize_project_state,
     load_project_state,
+    resolve_stage_review,
 )
 
 
@@ -490,6 +492,9 @@ def test_advance_refreshes_stage_baseline(
         "rev-parse",
         "HEAD",
     )
+
+    review = collect_stage_review(str(repo))
+    resolve_stage_review(str(repo), review["review_id"], "accept")
 
     summary = advance_project_state(
         str(repo),

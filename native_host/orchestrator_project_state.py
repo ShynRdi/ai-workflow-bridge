@@ -12,10 +12,14 @@ from project_state import (
     advance_project_state,
     apply_course_change,
     complete_project_state,
+    collect_stage_review,
+    current_stage_review_is_accepted,
     ensure_project_state,
     initialize_project_state,
     load_project_state,
     project_state_summary,
+    reconcile_stage_review_freshness,
+    resolve_stage_review,
 )
 
 
@@ -37,6 +41,10 @@ class ProjectStateMixin:
         state = load_project_state(workspace)
         if state is None:
             return None
+        # Restart and state refreshes may discover that Git evidence changed
+        # while no host process was running. This is a one-way downgrade only.
+        reconcile_stage_review_freshness(workspace)
+        state = load_project_state(workspace)
         current = state.get("current") or {}
         roadmap = list(state.get("roadmap") or [])
         self.config["roadmap"] = roadmap
@@ -434,6 +442,7 @@ PROJECT-LOCAL ROADMAP AUTHORITY
         return super()._roadmap_positions()
 
     def _maybe_apply_canonical_transition(self, contract) -> bool:
+        self._stage_review_blocked = False
         workspace = self._workspace_root()
         if workspace and Path(workspace).expanduser().is_dir():
             state = load_project_state(workspace)
@@ -443,6 +452,26 @@ PROJECT-LOCAL ROADMAP AUTHORITY
                 target = (str(contract.phase or "").strip(), str(contract.stage or "").strip())
                 if target == current_pair:
                     self.config["phase"], self.config["stage"] = current_pair
+                    return False
+                if not current_stage_review_is_accepted(workspace, state):
+                    existing = project_state_summary(workspace, state).get("stage_review")
+                    if not existing or str(existing.get("status") or "") == "stale":
+                        existing = collect_stage_review(workspace)
+                    self._stage_review_blocked = True
+                    self.paused = True
+                    self.lifecycle = "review_required"
+                    self.status = "review_required"
+                    self.current_step = "Current stage requires explicit human diff review"
+                    self.emit_event({
+                        "kind": "stage_review_required",
+                        "badge": "REVIEW!",
+                        "status": "review_required",
+                        "text": (
+                            "Roadmap transition blocked until the current stage's "
+                            "exact structured review is fresh and explicitly accepted."
+                        ),
+                    })
+                    self.emit({"kind": "state", "state": self.state()})
                     return False
                 summary = advance_project_state(workspace, target[0], target[1])
                 next_current = summary.get("current") or {}
@@ -460,6 +489,46 @@ PROJECT-LOCAL ROADMAP AUTHORITY
                 self.emit({"kind": "state", "state": self.state()})
                 return True
         return super()._maybe_apply_canonical_transition(contract)
+
+    def collect_stage_review(self) -> None:
+        workspace = self._workspace_root()
+        if not workspace or not Path(workspace).expanduser().is_dir():
+            raise ValueError("A valid workspace is required for stage review")
+        review = collect_stage_review(workspace)
+        self.paused = True
+        self.lifecycle = "review_required"
+        self.status = "review_required"
+        self.current_step = "Waiting for explicit human stage review"
+        self.emit_event({
+            "kind": "stage_review_required",
+            "badge": "REVIEW!",
+            "status": "review_required",
+            "text": "Structured stage review collected; inspect it and choose Accept Stage or Continue Work.",
+        })
+        self.emit({"kind": "state", "state": self.state()})
+
+    def resolve_stage_review(self, review_id: str, decision: str) -> None:
+        workspace = self._workspace_root()
+        if not workspace or not Path(workspace).expanduser().is_dir():
+            raise ValueError("A valid workspace is required for stage review")
+        review = resolve_stage_review(workspace, review_id, decision)
+        if str(decision).strip().lower() == "accept":
+            self.paused = False
+            self.lifecycle = "idle"
+            self.status = "idle"
+            self.current_step = "Stage review accepted; submit a fresh immediate-next-stage contract to transition"
+        else:
+            self.paused = False
+            self.lifecycle = "idle"
+            self.status = "idle"
+            self.current_step = "Stage review rejected; continue work on the current stage"
+        self.emit_event({
+            "kind": "stage_review_resolved",
+            "badge": "ACCEPTED" if review.get("status") == "accepted" else "CONTINUE",
+            "status": self.status,
+            "text": self.current_step,
+        })
+        self.emit({"kind": "state", "state": self.state()})
 
     def resolve_approval(self, approval_id: str, decision: str) -> None:
         pending = self.pending.get(approval_id) or {}

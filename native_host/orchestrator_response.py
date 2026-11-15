@@ -126,7 +126,14 @@ class ResponseMixin:
                 self.no_contract_recoveries=0; self.store.event("contract",asdict(contract)); self.status="validating"
                 if self.lifecycle not in {"finishing"}: self.lifecycle="running"
                 self.current_step=contract.summary or "Validating workflow contract"; self.emit_event({"kind":"step","badge":"SCAN","status":"validating","text":self.current_step})
-                self._maybe_apply_canonical_transition(contract); roadmap_problem=self._roadmap_mismatch(contract)
+                self._maybe_apply_canonical_transition(contract)
+                if getattr(self, "_stage_review_blocked", False):
+                    # The contract targeted the immediate next stage, but no
+                    # human-accepted review exists for the stage being left.
+                    # Do not execute its commands or convert this safety gate
+                    # into a generic roadmap-change approval.
+                    return
+                roadmap_problem=self._roadmap_mismatch(contract)
                 if roadmap_problem:
                     self._request_decision(contract,command="ROADMAP CHANGE",summary="The LLM proposed a step outside the configured roadmap.",impact=roadmap_problem,continuation={"kind":"contract","contract":contract}); return
                 if contract.decision_required:

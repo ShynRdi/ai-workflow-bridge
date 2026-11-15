@@ -59,6 +59,34 @@ class MessageMixin:
             )
             return
 
+        if msg_type == "stage_review_collect":
+            try:
+                self.collect_stage_review()
+            except Exception as error:
+                self.emit_event({
+                    "kind": "error",
+                    "status": "review_required",
+                    "text": f"Could not collect structured stage review: {error}",
+                })
+            return
+
+        if msg_type == "stage_review_decision":
+            try:
+                self.resolve_stage_review(
+                    str(message.get("review_id") or ""),
+                    str(message.get("decision") or ""),
+                )
+            except Exception as error:
+                # Exact ID and freshness are validated by native canonical
+                # state, so stale panels cannot act on a replacement review.
+                self.emit_event({
+                    "kind": "error",
+                    "status": "review_required",
+                    "text": f"Stage review decision was not applied: {error}",
+                })
+                self.emit({"kind": "state", "state": self.state()})
+            return
+
         if msg_type == "recovery_prepare":
             tab_id = message.get("tab_id")
             provider = str(

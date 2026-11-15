@@ -31,15 +31,14 @@ def test_project_state_creates_local_docs_and_tracks_next(tmp_path: Path):
     assert (tmp_path / ".ai-workflow" / "HISTORY.md").is_file()
 
 
-def test_advance_is_immediate_and_persists_history(tmp_path: Path):
+def test_legacy_non_git_state_cannot_silently_bypass_review(tmp_path: Path):
     initialize_project_state(str(tmp_path), sample_roadmap())
-    summary = advance_project_state(str(tmp_path), "P0", "CONFIG")
-    assert summary["current"]["label"] == "P0 / CONFIG"
-    assert summary["next"]["label"] == "P1 / API"
-    assert summary["completed"] == 1
-    history = (tmp_path / ".ai-workflow" / "HISTORY.md").read_text()
-    assert "Completed `P0 / BOOT`" in history
-    assert "Started `P0 / CONFIG`" in history
+    try:
+        advance_project_state(str(tmp_path), "P0", "CONFIG")
+    except ValueError as error:
+        assert "structured review" in str(error)
+    else:
+        raise AssertionError("legacy non-Git state must fail closed")
 
 
 def test_advance_rejects_skipping_stages(tmp_path: Path):
@@ -219,7 +218,7 @@ def test_project_state_persists_stage_acceptance_criteria(
     )
 
 
-def test_advance_updates_current_acceptance_criteria(
+def test_non_git_stage_acceptance_criteria_do_not_bypass_review(
     tmp_path: Path,
 ):
     roadmap = [
@@ -252,14 +251,9 @@ def test_advance_updates_current_acceptance_criteria(
         "Boot criterion",
     ]
 
-    advanced = advance_project_state(
-        str(tmp_path),
-        "P0",
-        "CONFIG",
-    )
-
-    assert advanced[
-        "current_acceptance_criteria"
-    ] == [
-        "Config criterion",
-    ]
+    try:
+        advance_project_state(str(tmp_path), "P0", "CONFIG")
+    except ValueError as error:
+        assert "structured review" in str(error)
+    else:
+        raise AssertionError("criterion presence is not human acceptance")
