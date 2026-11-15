@@ -463,7 +463,9 @@ and the next canonical stage is:
 CP-0 / ARCHITECTURE
 ```
 
-an LLM contract targeting that exact immediate next stage can advance automatically.
+an LLM contract targeting that exact immediate next stage is held for **Stage Diff Review**. Mission Control displays the canonical stage, acceptance criteria and their assessment state, changed files/statuses, baseline and current HEAD, branch, attribution confidence, and evidence freshness. Select **Accept Stage** only after reviewing that exact evidence; **Reject / Continue Work** returns to the current stage.
+
+The native host binds the decision to the displayed review ID, phase/stage, stage baseline, and current Git evidence. If any of those change, the review becomes stale and cannot accept a newer review accidentally. A fresh explicit human acceptance is required before a later immediate-next-stage contract may advance. Command success and LLM claims do not satisfy this gate.
 
 If the LLM attempts:
 

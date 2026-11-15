@@ -13,6 +13,7 @@ from config import load_config, public_config, save_config
 from contracts import WorkflowContract, extract_contract
 from files import quarantine_downloads
 from policy import classify
+from project_state import normalize_roadmap
 from runner import git_snapshot, run_command
 from safety import RunBudget
 from storage import Store
@@ -881,13 +882,52 @@ NON-NEGOTIABLE RULES
 Continue from the current conversation context now. If the next safe in-roadmap action requires repository state, emit low-risk inspection commands. Do not merely acknowledge this controller message.'''
 
     @staticmethod
-    def extract_roadmap(text: str) -> list[dict[str, Any]] | None:
-        start_marker="<<<AI_WORKFLOW_ROADMAP>>>"; end_marker="<<<END_AI_WORKFLOW_ROADMAP>>>"
-        if start_marker not in text or end_marker not in text: return None
-        raw=text.rsplit(start_marker,1)[1].split(end_marker,1)[0].strip(); raw=re.sub(r"^```(?:json)?\s*|\s*```$","",raw,flags=re.I|re.S).strip(); data=json.loads(raw); phases=[]
-        for item in data.get("phases") or []:
-            if not isinstance(item,dict) or not str(item.get("id") or "").strip(): continue
-            stages=[str(x).strip() for x in (item.get("stages") or []) if str(x).strip()]; phases.append({"id":str(item["id"]).strip(),"title":str(item.get("title") or "").strip(),"stages":stages})
+    def extract_roadmap(
+        text: str,
+    ) -> list[dict[str, Any]] | None:
+        start_marker = (
+            "<<<AI_WORKFLOW_ROADMAP>>>"
+        )
+        end_marker = (
+            "<<<END_AI_WORKFLOW_ROADMAP>>>"
+        )
+
+        if (
+            start_marker not in text
+            or end_marker not in text
+        ):
+            return None
+
+        raw = (
+            text.rsplit(
+                start_marker,
+                1,
+            )[1]
+            .split(
+                end_marker,
+                1,
+            )[0]
+            .strip()
+        )
+
+        raw = re.sub(
+            r"^```(?:json)?\s*|\s*```$",
+            "",
+            raw,
+            flags=re.I | re.S,
+        ).strip()
+
+        data = json.loads(
+            raw
+        )
+
+        phases = normalize_roadmap(
+            list(
+                data.get("phases")
+                or []
+            )
+        )
+
         return phases or None
 
     def course_change_prompt(self, request: str) -> str:

@@ -1,19 +1,149 @@
 from __future__ import annotations
 
 import errno
+import hashlib
 import json
 import os
 import stat
 import tempfile
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+from git_evidence import (
+    capture_stage_baseline,
+    git_changed_file_evidence,
+    public_stage_baseline,
+)
 
 CONTROL_DIR = ".ai-workflow"
 ROADMAP_FILE = "ROADMAP.md"
 HISTORY_FILE = "HISTORY.md"
 STATE_BEGIN = "<!-- AI_WORKFLOW_STATE_BEGIN -->"
 STATE_END = "<!-- AI_WORKFLOW_STATE_END -->"
+
+MAX_ACCEPTANCE_CRITERIA_PER_STAGE = 20
+MAX_ACCEPTANCE_CRITERION_CHARS = 500
+REVIEW_VERSION = 1
+REVIEW_STATES = {
+    "collecting", "review_required", "accepted", "rejected", "stale",
+}
+
+
+def normalize_roadmap(
+    roadmap: list[dict[str, Any]] | None,
+) -> list[dict[str, Any]]:
+    normalized: list[dict[str, Any]] = []
+
+    for raw_phase in roadmap or []:
+        if not isinstance(
+            raw_phase,
+            dict,
+        ):
+            continue
+
+        phase_id = str(
+            raw_phase.get("id")
+            or ""
+        ).strip()
+
+        if not phase_id:
+            continue
+
+        title = str(
+            raw_phase.get("title")
+            or ""
+        ).strip()
+
+        stages = [
+            str(value).strip()
+            for value in (
+                raw_phase.get("stages")
+                or []
+            )
+            if str(value).strip()
+        ]
+
+        raw_criteria = (
+            raw_phase.get(
+                "acceptance_criteria"
+            )
+            or {}
+        )
+
+        criteria: dict[str, list[str]] = {}
+
+        if isinstance(
+            raw_criteria,
+            dict,
+        ):
+            for stage in stages:
+                values = raw_criteria.get(
+                    stage
+                )
+
+                if isinstance(
+                    values,
+                    str,
+                ):
+                    values = [
+                        values
+                    ]
+
+                if not isinstance(
+                    values,
+                    list,
+                ):
+                    continue
+
+                cleaned: list[str] = []
+
+                for value in values:
+                    criterion = str(
+                        value
+                        or ""
+                    ).strip()
+
+                    if not criterion:
+                        continue
+
+                    criterion = criterion[
+                        :MAX_ACCEPTANCE_CRITERION_CHARS
+                    ]
+
+                    if criterion not in cleaned:
+                        cleaned.append(
+                            criterion
+                        )
+
+                    if (
+                        len(cleaned)
+                        >= MAX_ACCEPTANCE_CRITERIA_PER_STAGE
+                    ):
+                        break
+
+                if cleaned:
+                    criteria[
+                        stage
+                    ] = cleaned
+
+        phase: dict[str, Any] = {
+            "id": phase_id,
+            "title": title,
+            "stages": stages,
+        }
+
+        if criteria:
+            phase[
+                "acceptance_criteria"
+            ] = criteria
+
+        normalized.append(
+            phase
+        )
+
+    return normalized
 
 
 def now_iso() -> str:
@@ -210,6 +340,276 @@ def _next_pair(state: dict[str, Any]) -> tuple[str, str] | None:
     return positions[index + 1] if index + 1 < len(positions) else None
 
 
+def _acceptance_criteria(
+    state: dict[str, Any],
+    position: tuple[str, str] | None,
+) -> list[str]:
+    if not position:
+        return []
+
+    phase_id, stage = position
+
+    for phase in (
+        state.get("roadmap")
+        or []
+    ):
+        if not isinstance(
+            phase,
+            dict,
+        ):
+            continue
+
+        if (
+            str(
+                phase.get("id")
+                or ""
+            ).strip()
+            != phase_id
+        ):
+            continue
+
+        raw = (
+            phase.get(
+                "acceptance_criteria"
+            )
+            or {}
+        )
+
+        if not isinstance(
+            raw,
+            dict,
+        ):
+            return []
+
+        values = raw.get(
+            stage
+        )
+
+        if isinstance(
+            values,
+            str,
+        ):
+            values = [
+                values
+            ]
+
+        if not isinstance(
+            values,
+            list,
+        ):
+            return []
+
+        return [
+            str(value).strip()
+            for value in values
+            if str(value).strip()
+        ]
+
+    return []
+
+
+def _stable_digest(value: Any) -> str:
+    """Hash structured metadata; source diffs never enter lifecycle state."""
+    encoded = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _baseline_identity(baseline: Any, phase: str, stage: str) -> str:
+    public = public_stage_baseline(baseline, phase, stage)
+    return _stable_digest(public) if public is not None else ""
+
+
+def _review_evidence_identity(evidence: dict[str, Any]) -> str:
+    """Use only bounded, display-safe Git evidence for freshness binding."""
+    return _stable_digest({
+        "available": bool(evidence.get("available")),
+        "phase": str(evidence.get("phase") or ""),
+        "stage": str(evidence.get("stage") or ""),
+        "baseline_head": str(evidence.get("baseline_head") or ""),
+        "current_head": str(evidence.get("current_head") or ""),
+        "baseline_branch": str(evidence.get("baseline_branch") or ""),
+        "current_branch": str(evidence.get("current_branch") or ""),
+        "current_status_digest": str(evidence.get("current_status_digest") or ""),
+        "files": list(evidence.get("files") or []),
+        "truncated": bool(evidence.get("truncated")),
+    })
+
+
+def _review_for_current(state: dict[str, Any]) -> dict[str, Any] | None:
+    review = state.get("stage_review")
+    return dict(review) if isinstance(review, dict) else None
+
+
+def _review_freshness(
+    workspace_root: str,
+    state: dict[str, Any],
+    review: dict[str, Any],
+) -> tuple[bool, str, dict[str, Any]]:
+    current = _current_pair(state)
+    if not current:
+        return False, "project has no current stage", {}
+    phase, stage = current
+    baseline_identity = _baseline_identity(state.get("stage_baseline"), phase, stage)
+    if not baseline_identity:
+        return False, "current stage has no valid Git baseline identity", {}
+    if (str(review.get("phase") or ""), str(review.get("stage") or "")) != current:
+        return False, "review belongs to a different canonical stage", {}
+    if str(review.get("stage_baseline_identity") or "") != baseline_identity:
+        return False, "stage baseline changed after review collection", {}
+    evidence = git_changed_file_evidence(workspace_root, state.get("stage_baseline"))
+    if not bool(evidence.get("available")):
+        return False, "current Git evidence is unavailable", evidence
+    if str(review.get("evidence_identity") or "") != _review_evidence_identity(evidence):
+        return False, "Git evidence changed after review collection", evidence
+    return True, "", evidence
+
+
+def _public_review(
+    workspace_root: str,
+    state: dict[str, Any],
+) -> dict[str, Any] | None:
+    review = _review_for_current(state)
+    if review is None:
+        return None
+    fresh, reason, evidence = _review_freshness(workspace_root, state, review)
+    status = str(review.get("status") or "review_required")
+    if not fresh:
+        status = "stale"
+    result = dict(review)
+    result["status"] = status
+    result["evidence_freshness"] = "fresh" if fresh else "stale"
+    result["stale_reason"] = reason
+    # Recomputed evidence is authoritative for display and prevents stale UI data.
+    if evidence:
+        result["changed_file_evidence"] = evidence
+        result["changed_file_count"] = int(evidence.get("total_files") or 0)
+        result["attribution_exact"] = bool(evidence.get("attribution_exact"))
+    return result
+
+
+def collect_stage_review(workspace_root: str) -> dict[str, Any]:
+    """Create a new human-review record for exactly the canonical current stage."""
+    state = load_project_state(workspace_root)
+    if state is None:
+        raise ValueError("Project-local roadmap state is not initialized")
+    current = _current_pair(state)
+    if not current:
+        raise ValueError("Project has no current stage to review")
+    phase, stage = current
+    baseline = public_stage_baseline(state.get("stage_baseline"), phase, stage)
+    evidence = git_changed_file_evidence(workspace_root, state.get("stage_baseline")) if baseline else {
+        "available": False, "reason": "current stage has no valid Git baseline", "files": [],
+    }
+    stamp = now_iso()
+    criteria = _acceptance_criteria(state, current)
+    review: dict[str, Any] = {
+        "version": REVIEW_VERSION,
+        "review_id": uuid.uuid4().hex,
+        "phase": phase,
+        "stage": stage,
+        "stage_baseline_identity": _baseline_identity(state.get("stage_baseline"), phase, stage),
+        "stage_baseline": baseline,
+        "baseline_head": str((baseline or {}).get("git", {}).get("head_oid") or ""),
+        "current_head": str(evidence.get("current_head") or ""),
+        "branch": str(evidence.get("current_branch") or ""),
+        "changed_file_evidence": evidence,
+        "evidence_identity": _review_evidence_identity(evidence),
+        "acceptance_criteria": criteria,
+        "criterion_assessments": [
+            {"criterion": criterion, "status": "unassessed", "verification_evidence": []}
+            for criterion in criteria
+        ],
+        "verification_evidence": [],
+        "attribution_exact": bool(evidence.get("attribution_exact")),
+        "evidence_freshness": "fresh" if baseline and evidence.get("available") else "stale",
+        "stale_reason": "" if baseline and evidence.get("available") else str(evidence.get("reason") or "missing stage baseline"),
+        "status": "review_required" if baseline and evidence.get("available") else "stale",
+        "created_at": stamp,
+        "updated_at": stamp,
+    }
+    state["stage_review"] = review
+    state["revision"] = int(state.get("revision") or 1) + 1
+    state["updated_at"] = stamp
+    _write_state(workspace_root, state)
+    _, _, history_path = control_paths(workspace_root)
+    _append_history(history_path, [f"Stage review collected for `{_label(current)}` ({review['review_id']})."])
+    return _public_review(workspace_root, state) or review
+
+
+def resolve_stage_review(
+    workspace_root: str,
+    review_id: str,
+    decision: str,
+    expected_phase: str = "",
+    expected_stage: str = "",
+) -> dict[str, Any]:
+    """Apply an explicit human decision only to the exact fresh review shown."""
+    state = load_project_state(workspace_root)
+    if state is None:
+        raise ValueError("Project-local roadmap state is not initialized")
+    review = _review_for_current(state)
+    if review is None or str(review.get("review_id") or "") != str(review_id or ""):
+        raise ValueError("Stage review identity is stale or missing; refresh before deciding")
+    if expected_phase and str(review.get("phase") or "") != str(expected_phase):
+        raise ValueError("Stage review phase identity is stale or mismatched")
+    if expected_stage and str(review.get("stage") or "") != str(expected_stage):
+        raise ValueError("Stage review stage identity is stale or mismatched")
+    value = str(decision or "").strip().lower()
+    if value not in {"accept", "reject"}:
+        raise ValueError("Stage review decision must be accept or reject")
+    fresh, reason, _ = _review_freshness(workspace_root, state, review)
+    if not fresh:
+        review["status"] = "stale"
+        review["evidence_freshness"] = "stale"
+        review["stale_reason"] = reason
+        review["updated_at"] = now_iso()
+        state["stage_review"] = review
+        _write_state(workspace_root, state)
+        raise ValueError("Stage review is stale; collect and review current evidence")
+    review["status"] = "accepted" if value == "accept" else "rejected"
+    review["human_decision"] = value
+    review["human_decided_at"] = now_iso()
+    review["updated_at"] = review["human_decided_at"]
+    state["stage_review"] = review
+    state["revision"] = int(state.get("revision") or 1) + 1
+    state["updated_at"] = review["updated_at"]
+    _write_state(workspace_root, state)
+    _, _, history_path = control_paths(workspace_root)
+    _append_history(history_path, [f"Human {value}ed stage review `{review['review_id']}` for `{_label(_current_pair(state))}`."])
+    return _public_review(workspace_root, state) or review
+
+
+def current_stage_review_is_accepted(workspace_root: str, state: dict[str, Any] | None = None) -> bool:
+    state = state if state is not None else load_project_state(workspace_root)
+    if state is None:
+        return False
+    review = _review_for_current(state)
+    if review is None or str(review.get("status") or "") != "accepted":
+        return False
+    fresh, _, _ = _review_freshness(workspace_root, state, review)
+    return fresh
+
+
+def reconcile_stage_review_freshness(workspace_root: str) -> dict[str, Any] | None:
+    """Durably downgrade a stale review; it never upgrades or accepts one."""
+    state = load_project_state(workspace_root)
+    if state is None:
+        return None
+    review = _review_for_current(state)
+    public = _public_review(workspace_root, state)
+    if review is not None and public is not None and public.get("status") == "stale" and review.get("status") != "stale":
+        review["status"] = "stale"
+        review["evidence_freshness"] = "stale"
+        review["stale_reason"] = str(public.get("stale_reason") or "evidence changed")
+        review["updated_at"] = now_iso()
+        state["stage_review"] = review
+        state["revision"] = int(state.get("revision") or 1) + 1
+        state["updated_at"] = review["updated_at"]
+        _write_state(workspace_root, state)
+        return _public_review(workspace_root, state)
+    return public
+
+
 def _render_roadmap(state: dict[str, Any]) -> str:
     roadmap = list(state.get("roadmap") or [])
     completed = set(_completed_pairs(state))
@@ -244,6 +644,17 @@ def _render_roadmap(state: dict[str, Any]) -> str:
             pair = (phase_id, stage)
             marker = "x" if pair in completed else ">" if pair == current else " "
             lines.append(f"- [{marker}] `{_label(pair)}`")
+
+            criteria = _acceptance_criteria(
+                state,
+                pair,
+            )
+
+            for criterion in criteria:
+                lines.append(
+                    f"  - Acceptance: {criterion}"
+                )
+
         lines.append("")
 
     machine = json.dumps(state, ensure_ascii=False, indent=2, sort_keys=True)
@@ -306,6 +717,25 @@ def project_state_summary(workspace_root: str, state: dict[str, Any] | None = No
         "next": {"phase": nxt[0], "stage": nxt[1], "label": _label(nxt)} if nxt else None,
         "completed": len(completed),
         "total": len(positions),
+        "current_acceptance_criteria": (
+            _acceptance_criteria(
+                state,
+                current,
+            )
+        ),
+        "stage_baseline": (
+            public_stage_baseline(
+                state.get("stage_baseline"),
+                current[0],
+                current[1],
+            )
+            if current
+            else None
+        ),
+        "stage_review": _public_review(
+            workspace_root,
+            state,
+        ) if current else None,
         "control_dir": str(control),
         "roadmap_path": str(roadmap_path),
         "history_path": str(history_path),
@@ -319,6 +749,10 @@ def initialize_project_state(
     preferred_stage: str = "",
     reason: str = "project planned",
 ) -> dict[str, Any]:
+    roadmap = normalize_roadmap(
+        roadmap
+    )
+
     positions = _positions(roadmap)
     if not positions:
         raise ValueError("Roadmap has no executable phase/stage positions")
@@ -334,6 +768,12 @@ def initialize_project_state(
         "roadmap": roadmap,
         "current": {"phase": current[0], "stage": current[1]},
         "completed": [],
+        "stage_baseline": capture_stage_baseline(
+            workspace_root,
+            current[0],
+            current[1],
+            stamp,
+        ),
     }
     _write_state(workspace_root, state)
     _, _, history_path = control_paths(workspace_root)
@@ -370,15 +810,29 @@ def advance_project_state(workspace_root: str, target_phase: str, target_stage: 
     expected = positions[index + 1] if index + 1 < len(positions) else None
     if target != expected:
         raise ValueError(f"Only the immediate next roadmap position is allowed; expected {_label(expected)}")
+    if not current_stage_review_is_accepted(workspace_root, state):
+        raise ValueError(
+            "Current stage requires an exact fresh human-accepted structured review before transition"
+        )
 
     completed = _completed_pairs(state)
     if current not in completed:
         completed.append(current)
     state["completed"] = [{"phase": p, "stage": s} for p, s in completed]
+    stamp = now_iso()
     state["current"] = {"phase": target[0], "stage": target[1]}
+    state["stage_baseline"] = capture_stage_baseline(
+        workspace_root,
+        target[0],
+        target[1],
+        stamp,
+    )
+    # A review is inseparable from the completed stage and must never travel
+    # with the lifecycle cursor.
+    state.pop("stage_review", None)
     state["status"] = "active"
     state["revision"] = int(state.get("revision") or 1) + 1
-    state["updated_at"] = now_iso()
+    state["updated_at"] = stamp
     _write_state(workspace_root, state)
     _, _, history_path = control_paths(workspace_root)
     _append_history(history_path, [f"Completed `{_label(current)}`.", f"Started `{_label(target)}`."])
@@ -419,7 +873,14 @@ def apply_course_change(
             raise ValueError("Project-local roadmap state is not initialized")
         return initialize_project_state(workspace_root, replacement_roadmap, proposed_phase, proposed_stage, reason=summary)
 
-    roadmap = list(replacement_roadmap or state.get("roadmap") or [])
+    roadmap = normalize_roadmap(
+        list(
+            replacement_roadmap
+            or state.get("roadmap")
+            or []
+        )
+    )
+
     positions = _positions(roadmap)
     if not positions:
         raise ValueError("Approved replacement roadmap has no positions")
@@ -435,10 +896,19 @@ def apply_course_change(
 
     state["roadmap"] = roadmap
     state["completed"] = [{"phase": p, "stage": s} for p, s in completed]
+    stamp = now_iso()
     state["current"] = {"phase": current[0], "stage": current[1]}
+    state["stage_baseline"] = capture_stage_baseline(
+        workspace_root,
+        current[0],
+        current[1],
+        stamp,
+    )
+    # Roadmap replacement establishes a new canonical stage identity.
+    state.pop("stage_review", None)
     state["status"] = "active"
     state["revision"] = int(state.get("revision") or 1) + 1
-    state["updated_at"] = now_iso()
+    state["updated_at"] = stamp
     _write_state(workspace_root, state)
     _, _, history_path = control_paths(workspace_root)
     _append_history(history_path, [f"Course change approved: {summary}.", f"Current roadmap position is `{_label(current)}`."])

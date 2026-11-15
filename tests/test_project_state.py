@@ -31,15 +31,14 @@ def test_project_state_creates_local_docs_and_tracks_next(tmp_path: Path):
     assert (tmp_path / ".ai-workflow" / "HISTORY.md").is_file()
 
 
-def test_advance_is_immediate_and_persists_history(tmp_path: Path):
+def test_legacy_non_git_state_cannot_silently_bypass_review(tmp_path: Path):
     initialize_project_state(str(tmp_path), sample_roadmap())
-    summary = advance_project_state(str(tmp_path), "P0", "CONFIG")
-    assert summary["current"]["label"] == "P0 / CONFIG"
-    assert summary["next"]["label"] == "P1 / API"
-    assert summary["completed"] == 1
-    history = (tmp_path / ".ai-workflow" / "HISTORY.md").read_text()
-    assert "Completed `P0 / BOOT`" in history
-    assert "Started `P0 / CONFIG`" in history
+    try:
+        advance_project_state(str(tmp_path), "P0", "CONFIG")
+    except ValueError as error:
+        assert "structured review" in str(error)
+    else:
+        raise AssertionError("legacy non-Git state must fail closed")
 
 
 def test_advance_rejects_skipping_stages(tmp_path: Path):
@@ -135,3 +134,126 @@ def test_rejects_symlinked_history_file_without_touching_target(
 
     # control_paths validates the whole native-owned layout before writing.
     assert not (control / "ROADMAP.md").exists()
+
+
+def test_project_state_persists_stage_acceptance_criteria(
+    tmp_path: Path,
+):
+    roadmap = [
+        {
+            "id": "P0",
+            "title": "Foundation",
+            "stages": [
+                "BOOT",
+                "CONFIG",
+            ],
+            "acceptance_criteria": {
+                "BOOT": [
+                    "Application starts successfully",
+                    "Health check passes",
+                ],
+                "CONFIG": [
+                    "Configuration is validated",
+                ],
+                "UNKNOWN": [
+                    "Must be ignored",
+                ],
+            },
+        }
+    ]
+
+    summary = initialize_project_state(
+        str(tmp_path),
+        roadmap,
+    )
+
+    assert summary[
+        "current_acceptance_criteria"
+    ] == [
+        "Application starts successfully",
+        "Health check passes",
+    ]
+
+    state = load_project_state(
+        str(tmp_path)
+    )
+
+    assert state is not None
+
+    phase = state["roadmap"][0]
+
+    assert phase[
+        "acceptance_criteria"
+    ] == {
+        "BOOT": [
+            "Application starts successfully",
+            "Health check passes",
+        ],
+        "CONFIG": [
+            "Configuration is validated",
+        ],
+    }
+
+    rendered = (
+        tmp_path /
+        ".ai-workflow" /
+        "ROADMAP.md"
+    ).read_text(
+        encoding="utf-8"
+    )
+
+    assert (
+        "Acceptance: Application starts successfully"
+        in rendered
+    )
+
+    assert (
+        "Acceptance: Health check passes"
+        in rendered
+    )
+
+    assert (
+        "Must be ignored"
+        not in rendered
+    )
+
+
+def test_non_git_stage_acceptance_criteria_do_not_bypass_review(
+    tmp_path: Path,
+):
+    roadmap = [
+        {
+            "id": "P0",
+            "title": "Foundation",
+            "stages": [
+                "BOOT",
+                "CONFIG",
+            ],
+            "acceptance_criteria": {
+                "BOOT": [
+                    "Boot criterion",
+                ],
+                "CONFIG": [
+                    "Config criterion",
+                ],
+            },
+        }
+    ]
+
+    initial = initialize_project_state(
+        str(tmp_path),
+        roadmap,
+    )
+
+    assert initial[
+        "current_acceptance_criteria"
+    ] == [
+        "Boot criterion",
+    ]
+
+    try:
+        advance_project_state(str(tmp_path), "P0", "CONFIG")
+    except ValueError as error:
+        assert "structured review" in str(error)
+    else:
+        raise AssertionError("criterion presence is not human acceptance")
