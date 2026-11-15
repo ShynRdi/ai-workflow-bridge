@@ -531,6 +531,11 @@ def collect_stage_review(workspace_root: str) -> dict[str, Any]:
     state["revision"] = int(state.get("revision") or 1) + 1
     state["updated_at"] = stamp
     _write_state(workspace_root, state)
+    # New planned projects receive an explicit balanced policy record; older
+    # workspaces without one continue to resolve safely through the legacy
+    # balanced sentinel in project_policy.
+    from project_policy import ensure_policy_state
+    ensure_policy_state(workspace_root)
     _, _, history_path = control_paths(workspace_root)
     _append_history(history_path, [f"Stage review collected for `{_label(current)}` ({review['review_id']})."])
     return _public_review(workspace_root, state) or review
