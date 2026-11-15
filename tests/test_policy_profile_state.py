@@ -53,3 +53,23 @@ def test_invalid_desired_profile_changes_nothing(tmp_path: Path):
     with pytest.raises(ValueError, match="Unknown"):
         change_policy_profile(str(tmp_path), "unsafe", state["revision"])
     assert load_policy_state(str(tmp_path))["revision"] == state["revision"]
+
+
+def test_each_workspace_has_its_own_canonical_policy(tmp_path: Path):
+    first_root = tmp_path / "first"
+    second_root = tmp_path / "second"
+    first_root.mkdir()
+    second_root.mkdir()
+    first = ensure_policy_state(str(first_root))
+    ensure_policy_state(str(second_root))
+    change_policy_profile(str(first_root), "strict", first["revision"])
+    assert load_policy_state(str(first_root))["profile"] == "strict"
+    assert load_policy_state(str(second_root))["profile"] == "balanced"
+
+
+def test_reloading_persisted_policy_preserves_profile_and_revision(tmp_path: Path):
+    initial = ensure_policy_state(str(tmp_path))
+    changed = change_policy_profile(str(tmp_path), "isolated_development", initial["revision"])
+    reloaded = load_policy_state(str(tmp_path))
+    assert reloaded["profile"] == "isolated_development"
+    assert reloaded["revision"] == changed["revision"]
