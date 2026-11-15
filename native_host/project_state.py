@@ -9,6 +9,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from git_evidence import (
+    capture_stage_baseline,
+    public_stage_baseline,
+)
+
 CONTROL_DIR = ".ai-workflow"
 ROADMAP_FILE = "ROADMAP.md"
 HISTORY_FILE = "HISTORY.md"
@@ -509,6 +514,15 @@ def project_state_summary(workspace_root: str, state: dict[str, Any] | None = No
                 current,
             )
         ),
+        "stage_baseline": (
+            public_stage_baseline(
+                state.get("stage_baseline"),
+                current[0],
+                current[1],
+            )
+            if current
+            else None
+        ),
         "control_dir": str(control),
         "roadmap_path": str(roadmap_path),
         "history_path": str(history_path),
@@ -541,6 +555,12 @@ def initialize_project_state(
         "roadmap": roadmap,
         "current": {"phase": current[0], "stage": current[1]},
         "completed": [],
+        "stage_baseline": capture_stage_baseline(
+            workspace_root,
+            current[0],
+            current[1],
+            stamp,
+        ),
     }
     _write_state(workspace_root, state)
     _, _, history_path = control_paths(workspace_root)
@@ -582,10 +602,17 @@ def advance_project_state(workspace_root: str, target_phase: str, target_stage: 
     if current not in completed:
         completed.append(current)
     state["completed"] = [{"phase": p, "stage": s} for p, s in completed]
+    stamp = now_iso()
     state["current"] = {"phase": target[0], "stage": target[1]}
+    state["stage_baseline"] = capture_stage_baseline(
+        workspace_root,
+        target[0],
+        target[1],
+        stamp,
+    )
     state["status"] = "active"
     state["revision"] = int(state.get("revision") or 1) + 1
-    state["updated_at"] = now_iso()
+    state["updated_at"] = stamp
     _write_state(workspace_root, state)
     _, _, history_path = control_paths(workspace_root)
     _append_history(history_path, [f"Completed `{_label(current)}`.", f"Started `{_label(target)}`."])
@@ -649,10 +676,17 @@ def apply_course_change(
 
     state["roadmap"] = roadmap
     state["completed"] = [{"phase": p, "stage": s} for p, s in completed]
+    stamp = now_iso()
     state["current"] = {"phase": current[0], "stage": current[1]}
+    state["stage_baseline"] = capture_stage_baseline(
+        workspace_root,
+        current[0],
+        current[1],
+        stamp,
+    )
     state["status"] = "active"
     state["revision"] = int(state.get("revision") or 1) + 1
-    state["updated_at"] = now_iso()
+    state["updated_at"] = stamp
     _write_state(workspace_root, state)
     _, _, history_path = control_paths(workspace_root)
     _append_history(history_path, [f"Course change approved: {summary}.", f"Current roadmap position is `{_label(current)}`."])
