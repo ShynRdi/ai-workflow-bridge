@@ -22,6 +22,16 @@ Blocked examples include destructive filesystem operations, hard resets, system 
 
 Protected examples include dependency changes, remote Git publication, migrations, remote machine access, compound shell syntax, secret-looking files, and low-risk reads that explicitly escape the workspace.
 
+### Per-project security policy profiles
+
+Each workspace has native-host-owned policy state at `<workspace>/.ai-workflow/POLICY.json`. Missing legacy state resolves to the backward-compatible **Balanced** profile. The file is revisioned and protected with the same no-follow/atomic-write discipline as other native state.
+
+**Strict** adds stronger restrictions for remote, network, and outside-workspace actions. **Balanced** preserves normal guarded development behavior. **Isolated Development** may allow only narrowly proven workspace-local setup actions; it does **not** create a process, container, VM, OS, or network sandbox. Actual execution isolation remains planned for v0.4.
+
+Only an explicit human Mission Control action can change a profile. The action is bound to the exact displayed policy revision, so stale UI actions fail closed. LLM contracts and generic configuration cannot select or relax a profile. Profile changes are blocked during recovery, command execution, pending approvals, and active workflow windows; they never replay commands, resume work, or accept checkpoints or stage reviews.
+
+Immutable destructive and credential-path blocks apply to every profile. The LLM risk assessment can increase effective risk but cannot lower deterministic policy risk.
+
 ### Secret exposure defenses
 
 - Common credential stores are blocked by path guard.

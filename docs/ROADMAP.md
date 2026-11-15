@@ -40,6 +40,8 @@ This roadmap is directional and does not promise dates.
 - Strict / Balanced / isolated-development profiles.
 - Per-project execution policy.
 - Stronger path, network, external-state and production boundaries.
+- Explicit revision-bound human profile changes; stale controls fail closed.
+- Isolated Development remains a policy profile only. Execution isolation is planned for v0.4.
 
 ## 0.4 — Execution isolation
 

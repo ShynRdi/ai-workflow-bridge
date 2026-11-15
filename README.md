@@ -56,6 +56,7 @@ Same web LLM conversation
 - Multi-web-LLM provider registry with explicit support levels.
 - Per-provider optional Chrome site permissions.
 - Local command classification: low-risk / approval / blocked.
+- Per-project Strict, Balanced, and Isolated Development policy profiles; profile changes are explicit, revision-bound human actions. Isolated Development is not an execution sandbox.
 - Sensitive credential-path guards and output secret redaction.
 - Rate limits, autonomy budgets, circuit-style provider safety pauses.
 - No automatic provider fallback.
