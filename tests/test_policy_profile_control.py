@@ -10,6 +10,7 @@ sys.path.insert(0, str(Path(__file__).parents[1] / "native_host"))
 from orchestrator_project_state import ProjectStateMixin
 from orchestrator_messages import MessageMixin
 from project_policy import ensure_policy_state, load_policy_state
+import config as config_module
 
 
 class Bridge(ProjectStateMixin):
@@ -90,3 +91,19 @@ def test_recovery_message_cannot_replay_or_change_policy(tmp_path: Path):
     })
     assert bridge.called is False
     assert any(event.get("badge") == "RECOVER!" for event in bridge.events)
+
+
+def test_generic_config_cannot_change_canonical_project_policy(tmp_path: Path, monkeypatch):
+    app_dir = tmp_path / "bridge-config"
+    monkeypatch.setattr(config_module, "APP_DIR", app_dir)
+    monkeypatch.setattr(config_module, "CONFIG_PATH", app_dir / "config.json")
+    canonical = ensure_policy_state(str(tmp_path))
+    saved = config_module.save_config({
+        "workspace_root": str(tmp_path),
+        "policy_profile": "strict",
+        "profile": "strict",
+    })
+    assert "policy_profile" not in saved
+    assert "profile" not in saved
+    assert load_policy_state(str(tmp_path))["revision"] == canonical["revision"]
+    assert load_policy_state(str(tmp_path))["profile"] == "balanced"
