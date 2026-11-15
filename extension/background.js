@@ -1519,15 +1519,19 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       } else if (command.action === "stage_review_decision") {
         const reviewId = String(command.review_id || "").trim();
         const decision = String(command.decision || "").trim();
-        if (!reviewId || !["accept", "reject"].includes(decision)) {
-          throw new Error("A current stage-review identity and explicit decision are required.");
+        const phase = String(command.phase || "").trim();
+        const stage = String(command.stage || "").trim();
+        if (!reviewId || !phase || !stage || !["accept", "reject"].includes(decision)) {
+          throw new Error("Displayed stage-review identity, phase/stage, and explicit decision are required.");
         }
         sendNative({
           type: "stage_review_decision",
           review_id: reviewId,
+          phase,
+          stage,
           decision,
         });
-        return { ok: true, requested: "stage_review_decision", reviewId, decision };
+        return { ok: true, requested: "stage_review_decision", reviewId, phase, stage, decision };
       } else if (command.action === "diagnostics") {
         return {
           ok: true,

@@ -75,6 +75,8 @@ class MessageMixin:
                 self.resolve_stage_review(
                     str(message.get("review_id") or ""),
                     str(message.get("decision") or ""),
+                    str(message.get("phase") or ""),
+                    str(message.get("stage") or ""),
                 )
             except Exception as error:
                 # Exact ID and freshness are validated by native canonical

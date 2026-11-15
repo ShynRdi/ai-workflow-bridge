@@ -59,6 +59,11 @@ def test_review_persists_exact_identity_and_accept_flow(tmp_path: Path):
     with pytest.raises(ValueError, match="identity"):
         resolve_stage_review(str(repo), "wrong-id", "accept")
 
+    with pytest.raises(ValueError, match="phase identity"):
+        resolve_stage_review(
+            str(repo), review["review_id"], "accept", expected_phase="OTHER",
+        )
+
     accepted = resolve_stage_review(str(repo), review["review_id"], "accept")
     assert accepted["status"] == "accepted"
     advanced = advance_project_state(str(repo), "P0", "TWO")
@@ -77,6 +82,23 @@ def test_stale_review_cannot_accept_after_git_change(tmp_path: Path):
     summary = project_state_summary(str(repo))
     assert summary["stage_review"]["status"] == "stale"
     assert load_project_state(str(repo))["stage_review"]["status"] == "stale"
+
+
+def test_native_rejects_displayed_review_a_after_review_b_replaces_it(tmp_path: Path):
+    repo = repo_with_stage(tmp_path)
+    review_a = collect_stage_review(str(repo))
+    review_b = collect_stage_review(str(repo))
+
+    assert review_a["review_id"] != review_b["review_id"]
+    with pytest.raises(ValueError, match="identity"):
+        resolve_stage_review(
+            str(repo), review_a["review_id"], "accept",
+            expected_phase="P0", expected_stage="ONE",
+        )
+    assert resolve_stage_review(
+        str(repo), review_b["review_id"], "reject",
+        expected_phase="P0", expected_stage="ONE",
+    )["status"] == "rejected"
 
 
 def test_rejected_review_blocks_transition_and_control_files_are_excluded(tmp_path: Path):

@@ -507,11 +507,23 @@ PROJECT-LOCAL ROADMAP AUTHORITY
         })
         self.emit({"kind": "state", "state": self.state()})
 
-    def resolve_stage_review(self, review_id: str, decision: str) -> None:
+    def resolve_stage_review(
+        self,
+        review_id: str,
+        decision: str,
+        phase: str = "",
+        stage: str = "",
+    ) -> None:
         workspace = self._workspace_root()
         if not workspace or not Path(workspace).expanduser().is_dir():
             raise ValueError("A valid workspace is required for stage review")
-        review = resolve_stage_review(workspace, review_id, decision)
+        review = resolve_stage_review(
+            workspace,
+            review_id,
+            decision,
+            expected_phase=phase,
+            expected_stage=stage,
+        )
         if str(decision).strip().lower() == "accept":
             self.paused = False
             self.lifecycle = "idle"

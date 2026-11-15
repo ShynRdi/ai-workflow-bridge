@@ -617,8 +617,12 @@ function renderStageReview(projectState = {}) {
   for (const item of (review?.changed_file_evidence?.files || [])) { const row = document.createElement("div"); row.className = "recovery-approval"; row.textContent = `${item.status || "?"} · ${item.previous_path ? `${item.previous_path} → ` : ""}${item.path || ""}`; files.append(row); }
   if (!files.children.length) { const row = document.createElement("div"); row.className = "diagnostic-empty"; row.textContent = "No changed product files reported."; files.append(row); }
   const canDecide = Boolean(review?.review_id) && review?.evidence_freshness === "fresh" && review?.status === "review_required";
-  $("acceptStageReview").disabled = !canDecide;
-  $("rejectStageReview").disabled = !canDecide;
+  const renderedReview = canDecide ? review : null;
+  for (const id of ["acceptStageReview", "rejectStageReview"]) {
+    const button = $(id);
+    globalThis.AWB_STAGE_REVIEW_IDENTITY.bindActionIdentity(button, renderedReview);
+    button.disabled = !canDecide;
+  }
 }
 function handleEvent(event) { if (!event) return; if (event.kind === "host_status") {
     if (event.connecting) {
@@ -716,11 +720,10 @@ $("collectStageReview").addEventListener("click", async () => {
   catch (error) { addLog("CRASH", String(error?.message || error)); }
 });
 for (const [id, decision] of [["acceptStageReview", "accept"], ["rejectStageReview", "reject"]]) {
-  $(id).addEventListener("click", async () => {
+  $(id).addEventListener("click", async (event) => {
     try {
-      const reviewId = String(lastState?.project_state?.stage_review?.review_id || "").trim();
-      if (!reviewId) throw new Error("Review identity is missing. Refresh Mission Control and retry.");
-      await command("stage_review_decision", { review_id: reviewId, decision });
+      const payload = globalThis.AWB_STAGE_REVIEW_IDENTITY.actionPayload(event.currentTarget, decision);
+      await command("stage_review_decision", payload);
       addLog(decision === "accept" ? "ACCEPT" : "CONTINUE", decision === "accept" ? "Stage acceptance requested for the displayed review." : "Continue-work decision requested for the displayed review.");
     } catch (error) { addLog("CRASH", String(error?.message || error)); }
   });

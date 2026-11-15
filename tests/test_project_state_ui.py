@@ -1,3 +1,5 @@
+import json
+import subprocess
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -45,3 +47,51 @@ def test_stage_review_ui_uses_native_review_identity():
     assert "review_id" in panel
     assert 'command("stage_review_decision"' in panel
     assert 'type: "stage_review_decision"' in background
+
+
+def test_stage_review_action_keeps_rendered_identity_after_state_replacement():
+    identity = EXT / "stage-review-identity.js"
+    source = identity.read_text(encoding="utf-8")
+    node = f"""
+const vm = require("vm");
+const context = {{}};
+context.globalThis = context;
+vm.runInNewContext({json.dumps(source)}, context);
+const button = {{ dataset: {{}} }};
+context.AWB_STAGE_REVIEW_IDENTITY.bindActionIdentity(button, {{
+  review_id: "review-A", phase: "P0", stage: "ONE",
+}});
+// An unrelated state update has selected a newer Review B, but this button
+// remains the UI control rendered for Review A until it is re-rendered.
+const lastState = {{ project_state: {{ stage_review: {{
+  review_id: "review-B", phase: "P0", stage: "ONE",
+}} }} }};
+console.log(JSON.stringify({{
+  lastStateReview: lastState.project_state.stage_review.review_id,
+  sent: context.AWB_STAGE_REVIEW_IDENTITY.actionPayload(button, "accept"),
+}}));
+"""
+    completed = subprocess.run(
+        ["node", "-e", node],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    result = json.loads(completed.stdout)
+
+    assert result["lastStateReview"] == "review-B"
+    assert result["sent"] == {
+        "review_id": "review-A",
+        "phase": "P0",
+        "stage": "ONE",
+        "decision": "accept",
+    }
+
+    panel = (EXT / "sidepanel.js").read_text(encoding="utf-8")
+    handlers = panel[
+        panel.index('for (const [id, decision] of [["acceptStageReview"'):
+        panel.index('$("prepareRecovery")', panel.index('for (const [id, decision] of [["acceptStageReview"'))
+    ]
+    assert "lastState?.project_state?.stage_review" not in handlers
+    assert "actionPayload(event.currentTarget, decision)" in handlers

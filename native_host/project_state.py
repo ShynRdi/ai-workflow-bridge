@@ -536,7 +536,13 @@ def collect_stage_review(workspace_root: str) -> dict[str, Any]:
     return _public_review(workspace_root, state) or review
 
 
-def resolve_stage_review(workspace_root: str, review_id: str, decision: str) -> dict[str, Any]:
+def resolve_stage_review(
+    workspace_root: str,
+    review_id: str,
+    decision: str,
+    expected_phase: str = "",
+    expected_stage: str = "",
+) -> dict[str, Any]:
     """Apply an explicit human decision only to the exact fresh review shown."""
     state = load_project_state(workspace_root)
     if state is None:
@@ -544,6 +550,10 @@ def resolve_stage_review(workspace_root: str, review_id: str, decision: str) -> 
     review = _review_for_current(state)
     if review is None or str(review.get("review_id") or "") != str(review_id or ""):
         raise ValueError("Stage review identity is stale or missing; refresh before deciding")
+    if expected_phase and str(review.get("phase") or "") != str(expected_phase):
+        raise ValueError("Stage review phase identity is stale or mismatched")
+    if expected_stage and str(review.get("stage") or "") != str(expected_stage):
+        raise ValueError("Stage review stage identity is stale or mismatched")
     value = str(decision or "").strip().lower()
     if value not in {"accept", "reject"}:
         raise ValueError("Stage review decision must be accept or reject")
