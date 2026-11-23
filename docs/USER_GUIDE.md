@@ -705,6 +705,16 @@ The LLM must not assume `~/Downloads`.
 
 # 15. Command safety
 
+## Security policy profiles
+
+Mission Control shows the current per-project profile and lets you explicitly apply a new one only while the workflow is paused or otherwise idle. The native-host-owned record is `<workspace>/.ai-workflow/POLICY.json`; older workspaces without that file use **Balanced** safely.
+
+- **Strict** adds maximum supervision for remote, network, outside-workspace, and external-state actions.
+- **Balanced** is the recommended default and preserves the normal guarded development behavior.
+- **Isolated Development** reduces friction only for narrowly proven workspace-local setup actions. It does **not** create an OS, container, process, VM, or network sandbox.
+
+Applying a profile is revision-bound to the policy state displayed in Mission Control. If it changes elsewhere, the old action fails rather than changing a replacement policy. LLMs cannot choose profiles, and profile changes never resume execution, approve a command, accept a checkpoint, or accept a stage review.
+
 Typical auto-run candidates:
 - `pwd`
 - `ls`
@@ -841,6 +851,7 @@ The native host owns:
 ```text
 <workspace>/.ai-workflow/ROADMAP.md
 <workspace>/.ai-workflow/HISTORY.md
+<workspace>/.ai-workflow/POLICY.json
 ```
 
 The Bridge rejects symbolic links for the control directory and these native-owned state files. Project commands that attempt to replace or mutate `.ai-workflow` are rejected or repaired before execution continues.

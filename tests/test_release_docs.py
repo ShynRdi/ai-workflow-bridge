@@ -155,3 +155,15 @@ def test_unreleased_structured_review_docs_preserve_human_gate():
         "read-only git",
     ]:
         assert phrase in combined
+
+
+def test_unreleased_policy_profile_docs_preserve_security_boundaries():
+    combined = "\n".join(
+        (ROOT / name).read_text(encoding="utf-8")
+        for name in ["CHANGELOG.md", "README.md", "docs/ROADMAP.md", "docs/SECURITY_MODEL.md", "docs/USER_GUIDE.md"]
+    ).lower()
+    for phrase in [
+        "per-project", "balanced", "strict", "isolated development",
+        "stale", "llm", "execution isolation", "v0.4", ".ai-workflow/policy.json",
+    ]:
+        assert phrase in combined

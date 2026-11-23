@@ -34,7 +34,7 @@ def test_command_state_is_persisted_before_process_execution(
     monkeypatch.setattr(
         orchestrator_risk,
         "classify",
-        lambda _cmd, _workspace: SimpleNamespace(
+        lambda _cmd, _workspace, _profile: SimpleNamespace(
             level="auto",
         ),
     )

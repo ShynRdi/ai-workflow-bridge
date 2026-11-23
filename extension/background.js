@@ -1532,6 +1532,18 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           decision,
         });
         return { ok: true, requested: "stage_review_decision", reviewId, phase, stage, decision };
+      } else if (command.action === "policy_profile_change") {
+        const desiredProfile = String(command.desired_profile || "").trim();
+        const expectedRevision = String(command.expected_policy_revision || "").trim();
+        if (!desiredProfile || !expectedRevision) {
+          throw new Error("Displayed policy revision and desired profile are required.");
+        }
+        sendNative({
+          type: "policy_profile_change",
+          desired_profile: desiredProfile,
+          expected_policy_revision: expectedRevision,
+        });
+        return { ok: true, requested: "policy_profile_change" };
       } else if (command.action === "diagnostics") {
         return {
           ok: true,

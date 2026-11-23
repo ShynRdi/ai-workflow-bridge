@@ -59,6 +59,21 @@ class MessageMixin:
             )
             return
 
+        if msg_type == "policy_profile_change":
+            try:
+                self.change_security_policy_profile(
+                    str(message.get("desired_profile") or ""),
+                    str(message.get("expected_policy_revision") or ""),
+                )
+            except Exception as error:
+                self.emit_event({
+                    "kind": "error",
+                    "status": str(getattr(self, "status", "blocked")),
+                    "text": f"Policy profile change was not applied: {error}",
+                })
+                self.emit({"kind": "state", "state": self.state()})
+            return
+
         if msg_type == "stage_review_collect":
             try:
                 self.collect_stage_review()

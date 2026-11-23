@@ -4,6 +4,14 @@ All notable public changes will be documented here. This project follows Semanti
 
 ## [Unreleased]
 
+### Security policy profiles
+
+- Added native-owned, per-project Strict, Balanced, and Isolated Development policy profiles with exact revision-bound human changes.
+- Balanced preserves the existing guarded behavior; Strict adds stronger remote, network, and outside-workspace restrictions.
+- Isolated Development only relaxes narrowly proven workspace-local setup actions and does not provide OS, container, VM, process, or network isolation.
+- Immutable destructive and credential-path blocks remain blocked for every profile. LLM assessments can escalate risk but cannot select, lower, or bypass policy.
+- Mission Control binds profile changes to the exact displayed policy revision; stale actions fail closed and profile changes never resume or replay work.
+
 ## [0.3.5] - 2026-11-15
 
 ### Structured diff review and stage acceptance

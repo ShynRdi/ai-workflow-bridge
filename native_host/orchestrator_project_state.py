@@ -21,6 +21,10 @@ from project_state import (
     reconcile_stage_review_freshness,
     resolve_stage_review,
 )
+from project_policy import (
+    change_policy_profile,
+    policy_summary,
+)
 
 
 class ProjectStateMixin:
@@ -60,6 +64,7 @@ class ProjectStateMixin:
             workspace = self._workspace_root()
             if workspace and Path(workspace).expanduser().is_dir():
                 project_state = project_state_summary(workspace, state)
+                project_state["policy"] = policy_summary(workspace)
         except Exception as error:
             project_state_error = str(error)
         base = super().state()
@@ -504,6 +509,37 @@ PROJECT-LOCAL ROADMAP AUTHORITY
             "badge": "REVIEW!",
             "status": "review_required",
             "text": "Structured stage review collected; inspect it and choose Accept Stage or Continue Work.",
+        })
+        self.emit({"kind": "state", "state": self.state()})
+
+    def change_security_policy_profile(
+        self,
+        desired_profile: str,
+        expected_revision: str,
+    ) -> None:
+        """Apply a human CAS policy choice without altering workflow execution."""
+        workspace = self._workspace_root()
+        if not workspace or not Path(workspace).expanduser().is_dir():
+            raise ValueError("A valid workspace is required for policy changes")
+        if bool(getattr(self, "command_execution_active", False)):
+            raise ValueError("Policy cannot change while a local command is executing")
+        if getattr(self, "pending", {}):
+            raise ValueError("Policy cannot change while a human approval is pending")
+        lifecycle = str(getattr(self, "lifecycle", "") or "")
+        allowed = {"setup", "ready_to_arm", "idle", "paused", "protocol_error", "protocol_blocked"}
+        if lifecycle == "recovery_required":
+            raise ValueError("Policy cannot change during recovery review")
+        if lifecycle not in allowed:
+            raise ValueError("Policy changes require a paused or otherwise inert workflow state")
+        result = change_policy_profile(workspace, desired_profile, expected_revision)
+        # Do not alter paused/lifecycle/status, resolve an approval, or create
+        # an execution continuation. A policy choice is never an implicit run.
+        self.current_step = f"Security policy profile is {result['label']}"
+        self.emit_event({
+            "kind": "policy_profile_changed",
+            "badge": "POLICY",
+            "status": self.status,
+            "text": "Security policy profile changed by explicit human action; no workflow action was resumed.",
         })
         self.emit({"kind": "state", "state": self.state()})
 
