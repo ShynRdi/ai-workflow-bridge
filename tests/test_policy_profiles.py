@@ -61,6 +61,55 @@ def test_isolated_development_only_relaxes_path_proven_setup(tmp_path: Path):
         assert classify(command, str(tmp_path), ISOLATED_DEVELOPMENT).level != "low"
 
 
+@pytest.mark.parametrize("command", [
+    "touch note; curl https://example.com",
+    "touch note && curl https://example.com",
+    "touch note || curl https://example.com",
+    "touch note | cat",
+    "touch note > out",
+    "touch note >> out",
+    "touch note < input",
+    "touch \"$(whoami)\"",
+    "touch `whoami`",
+    "touch $HOME/file",
+    "touch ${HOME}/file",
+    "touch ../escape",
+    "touch ./ok ../escape",
+    'touch "ok"; git push origin main',
+    "mkdir -p build; curl https://example.com",
+    "mkdir -p build && git push origin main",
+    "mkdir -p ../escape",
+    "mkdir -p .ai-workflow/x",
+    "touch note & curl https://example.com",
+    "touch note\ncurl https://example.com",
+    "touch note\rcurl https://example.com",
+    "touch *.txt",
+    "touch file[1]",
+    "touch ~/file",
+])
+def test_isolated_development_never_lowers_shell_or_unsafe_paths(command: str, tmp_path: Path):
+    # Exercise the public classifier used by the orchestrator, including the
+    # exact reported compound-command approval bypass.
+    decision = classify(command, str(tmp_path), ISOLATED_DEVELOPMENT)
+    assert decision.level != "low"
+    assert classify(command, str(tmp_path), BALANCED).level == "approval"
+
+
+def test_isolated_development_accepts_only_literal_local_setup(tmp_path: Path):
+    for command in ["touch file.txt", "mkdir -p build/cache", "touch one.txt two.txt"]:
+        assert classify(command, str(tmp_path), ISOLATED_DEVELOPMENT).level == "low"
+    for profile in [BALANCED, STRICT]:
+        assert classify("touch file.txt", str(tmp_path), profile).level == "approval"
+
+
+def test_isolated_development_rejects_one_unsafe_operand_and_symlink_escape(tmp_path: Path):
+    outside = tmp_path.parent / (tmp_path.name + "-outside")
+    outside.mkdir()
+    (tmp_path / "escape-link").symlink_to(outside, target_is_directory=True)
+    for command in ["touch safe.txt ../escape", "touch safe.txt escape-link/file.txt"]:
+        assert classify(command, str(tmp_path), ISOLATED_DEVELOPMENT).level == "approval"
+
+
 def test_invalid_profile_fails_closed():
     with pytest.raises(ValueError, match="Unknown security policy profile"):
         validate_profile("unsafe")

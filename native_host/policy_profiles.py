@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import shlex
+import re
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
@@ -60,8 +61,16 @@ def public_profiles() -> list[dict[str, str]]:
 
 
 def _workspace_setup(command: str, workspace_root: str) -> bool:
-    """Recognize only two non-executing local setup primitives."""
-    if not workspace_root:
+    """Recognize a single literal setup command with no shell interpretation."""
+    if not workspace_root or not isinstance(command, str) or not command:
+        return False
+    # The runner invokes Bash. shlex alone is not a shell parser: it treats
+    # control operators as ordinary words, so reject all shell syntax before
+    # tokenization. The operand alphabet is intentionally narrow; this also
+    # excludes quoting/escaping and any syntax whose shell meaning could differ.
+    if any(char in command for char in ";&|><`$*?[]~\\\n\r(){}!#"):
+        return False
+    if not re.fullmatch(r"[A-Za-z0-9_./+\- \t]+", command):
         return False
     try:
         parts = shlex.split(command, posix=True)
@@ -77,6 +86,8 @@ def _workspace_setup(command: str, workspace_root: str) -> bool:
     elif executable != "touch":
         return False
     if not values or any(value.startswith("-") for value in values):
+        return False
+    if any(not re.fullmatch(r"[A-Za-z0-9_./+\-]+", value) for value in values):
         return False
 
     root = Path(workspace_root).expanduser().resolve()
