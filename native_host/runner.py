@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import hashlib
 import os
+import signal
 import shutil
 import subprocess
 import time
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -20,6 +22,7 @@ class CommandResult:
     duration_seconds: float
     stdout: str
     stderr: str
+    execution: dict[str, Any] | None = None
 
 
 SAFE_ENV_KEYS = (
@@ -58,7 +61,7 @@ def sanitized_environment(download_dir: str = "") -> dict[str, str]:
     return env
 
 
-def _snapshot_control_dir(root: Path) -> dict[str, bytes] | None:
+def _snapshot_control_dir(root: Path, *, exclude_runtime: bool = False) -> dict[str, bytes] | None:
     control = root / CONTROL_DIR_NAME
 
     if control.is_symlink():
@@ -90,6 +93,8 @@ def _snapshot_control_dir(root: Path) -> dict[str, bytes] | None:
                 "Native-owned .ai-workflow contains a non-regular entry"
             )
 
+        if exclude_runtime and path.name in {"EXECUTION_RUNTIME.json", "EXECUTION_RUNTIME.lock"}:
+            continue
         snapshot[str(path.relative_to(control))] = path.read_bytes()
 
     return snapshot
@@ -110,7 +115,7 @@ def _remove_control_entry(control: Path) -> None:
         control.unlink()
 
 
-def _restore_control_dir(root: Path, snapshot: dict[str, bytes] | None) -> bool:
+def _restore_control_dir(root: Path, snapshot: dict[str, bytes] | None, *, exclude_runtime: bool = False) -> bool:
     """Restore native-owned lifecycle files if a project command changed them.
 
     Returns True when mutation was detected and repaired. Symlinked control
@@ -126,7 +131,7 @@ def _restore_control_dir(root: Path, snapshot: dict[str, bytes] | None) -> bool:
         return True
 
     try:
-        current = _snapshot_control_dir(root)
+        current = _snapshot_control_dir(root, exclude_runtime=exclude_runtime)
     except ValueError:
         current = None
 
@@ -144,31 +149,249 @@ def _restore_control_dir(root: Path, snapshot: dict[str, bytes] | None) -> bool:
     return True
 
 
-def run_command(command: str, workspace_root: str, cwd: str, timeout: int, max_output_chars: int, download_dir: str = "") -> CommandResult:
-    root = Path(workspace_root).expanduser().resolve()
+def _run_process(argv: list[str], *, cwd: str, env: dict[str, str], timeout: int) -> tuple[int, str, str, bool]:
+    """Run a command in its own process group and reap the whole group on timeout."""
+    proc = subprocess.Popen(
+        argv, cwd=cwd, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        env=env, start_new_session=(os.name == "posix"),
+    )
+    timed_out = False
+    try:
+        stdout, stderr = proc.communicate(timeout=max(0.001, float(timeout)))
+        return proc.returncode, stdout, stderr, timed_out
+    except subprocess.TimeoutExpired:
+        timed_out = True
+        if os.name == "posix":
+            try:
+                os.killpg(proc.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+        else:
+            proc.terminate()
+        try:
+            stdout, stderr = proc.communicate(timeout=1.5)
+        except subprocess.TimeoutExpired:
+            if os.name == "posix":
+                try:
+                    os.killpg(proc.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+            else:
+                proc.kill()
+            stdout, stderr = proc.communicate()
+        return 124, stdout, (stderr + "\nCommand timed out and its process group was terminated.").strip(), timed_out
+
+
+def _safe_mount_path(path: Path) -> str:
+    resolved = path.resolve(strict=True)
+    if not resolved.is_dir() or path.is_symlink():
+        raise ValueError("Container mount must be a real directory")
+    value = str(resolved)
+    if "," in value or "\n" in value or "\r" in value:
+        raise ValueError("Container mount path cannot be represented safely")
+    return value
+
+
+def _docker_run(
+    command: str, root: Path, workdir: Path, timeout: int, download_dir: str,
+    execution_state: dict[str, Any],
+) -> tuple[int, str, str, dict[str, Any]]:
+    root = root.resolve(strict=True)
+    if root == Path("/"):
+        raise ValueError("Filesystem root cannot be used as a container workspace")
+    if not root.is_dir():
+        raise ValueError("Container workspace must be an existing directory")
+    settings = execution_state["container"]
+    image = settings["image"]
+    # Imported lazily to avoid the project_state -> git_evidence -> runner
+    # import chain cycling through the state module during startup.
+    from execution_state import validate_image
+
+    validate_image(image)
+    docker = shutil.which("docker")
+    if not docker:
+        raise RuntimeError("Docker executable is unavailable")
+    env = sanitized_environment()
+    for args, failure in (([docker, "info", "--format", "{{.ServerVersion}}"], "Docker daemon is unavailable"),
+                          ([docker, "image", "inspect", image], "Configured Docker image is unavailable locally")):
+        code, _out, _err, timed_out = _run_process(args, cwd=str(root), env=env, timeout=min(timeout, 10))
+        if code != 0 or timed_out:
+            raise RuntimeError(failure)
+
+    workspace_mount = _safe_mount_path(root)
+    control = root / CONTROL_DIR_NAME
+    if control.exists() or control.is_symlink():
+        control_mount = _safe_mount_path(control)
+    else:
+        raise RuntimeError("Workspace mount cannot be proven safe without native control directory")
+    relative_cwd = workdir.relative_to(root).as_posix()
+    container_cwd = "/workspace" if relative_cwd == "." else "/workspace/" + relative_cwd
+    from execution_runtime import (coordination_lock, runtime_lock, create_runtime_record,
+                                   inspect_container_record, inspect_container_id, load_runtime_record,
+                                   write_runtime_record, _clear_locked)
+    # This is the launch claim boundary: configuration mutation uses the same
+    # coordination lock and cannot slip between the gate and durable journal.
+    with coordination_lock(root):
+        from execution_state import load_execution_state
+        current_state = load_execution_state(str(root))
+        if current_state != execution_state:
+            raise RuntimeError("Execution settings changed before container launch")
+        if load_runtime_record(root) is not None:
+            raise RuntimeError("Execution is blocked while container recovery is unresolved")
+        record = create_runtime_record(root)
+        record = write_runtime_record(root, record)
+    argv = [docker, "run", "--name", record["container_name"],
+            "--label", "ai-workflow-bridge.managed=true",
+            "--label", "ai-workflow-bridge.execution=" + record["execution_id"],
+            "--label", "ai-workflow-bridge.workspace=" + record["workspace_identity"],
+            "--pull=never", "--network", "none", "--cap-drop=ALL",
+            "--security-opt", "no-new-privileges", "--init", "--read-only",
+            "--tmpfs", "/tmp:rw,noexec,nosuid,size=64m",
+            "--cpus", str(settings["cpus"]), "--memory", f'{settings["memory_mb"]}m',
+            "--pids-limit", str(settings["pids_limit"]),
+            "--mount", f"type=bind,src={workspace_mount},dst=/workspace",
+            "--mount", f"type=bind,src={control_mount},dst=/workspace/.ai-workflow,readonly",
+            "--workdir", container_cwd]
+    if os.name == "posix":
+        argv += ["--user", f"{os.getuid()}:{os.getgid()}"]
+    container_download = ""
+    if download_dir:
+        source = Path(download_dir).expanduser()
+        try:
+            source = Path(_safe_mount_path(source))
+        except (OSError, ValueError) as error:
+            raise RuntimeError("Bridge download directory is unsafe") from error
+        argv += ["--mount", f"type=bind,src={source},dst=/bridge-downloads,readonly"]
+        container_download = "/bridge-downloads"
+    argv += ["--env", "AI_WORKFLOW_BRIDGE=1", "--env", f"AI_WORKFLOW_DOWNLOAD_DIR={container_download}",
+             "--env", "HOME=/tmp", image, "/bin/bash", "-lc", command]
+    name = argv[argv.index("--name") + 1]
+    run_error: BaseException | None = None
+    cleanup_error: BaseException | None = None
+    cleanup_code = 0
+    cleanup_err = ""
+    run_code, stdout, stderr, timed_out = 1, "", "", False
+    run_attempted = False
+    cleanup_confirmed = False
+    try:
+        run_attempted = True
+        run_code, stdout, stderr, timed_out = _run_process(
+            argv, cwd=str(root), env=sanitized_environment(), timeout=timeout
+        )
+    except BaseException as error:
+        run_error = error
+    finally:
+        # Cleanup remains bound to this exact journal object and inspected ID.
+        if run_attempted:
+            try:
+                with coordination_lock(root):
+                    with runtime_lock(root):
+                        current = load_runtime_record(root)
+                        if current is None or current != record:
+                            raise RuntimeError("Execution journal changed; cleanup identity is uncertain")
+                        before_cleanup = inspect_container_record(root, record)
+                        current = load_runtime_record(root)
+                        if current is None or current != record:
+                            raise RuntimeError("Execution journal changed during inspection; cleanup identity is uncertain")
+                        if before_cleanup["inspection"] == "owned":
+                            container_id = before_cleanup["container_id"]
+                            cleanup_code, _cleanup_out, cleanup_err, _cleanup_timeout = _run_process(
+                                [docker, "rm", "-f", container_id], cwd=str(root), env=env, timeout=10
+                            )
+                            if cleanup_code == 0:
+                                after = inspect_container_id(root, container_id)
+                                cleanup_confirmed = after["inspection"] == "absent"
+                        elif before_cleanup["inspection"] == "absent":
+                            cleanup_code = 0
+                            cleanup_confirmed = True
+                        else:
+                            cleanup_code = 1
+                            cleanup_err = "Exact container ownership could not be verified"
+                        if cleanup_confirmed:
+                            _clear_locked(root, record)
+            except BaseException as error:
+                cleanup_error = error
+                cleanup_code = 1
+                cleanup_err = "Exact container ownership or cleanup could not be verified"
+    if not cleanup_confirmed:
+        cleanup_err = cleanup_err or "Execution cleanup could not be verified; journal retained"
+    if run_error is not None:
+        run_error.container_cleanup = {
+            "container_name": name, "attempted": True,
+            "succeeded": cleanup_confirmed and cleanup_error is None,
+            "exit_code": cleanup_code,
+            "error": str(cleanup_error) if cleanup_error is not None else cleanup_err,
+        }
+        if (cleanup_error is not None or cleanup_code != 0) and hasattr(run_error, "add_note"):
+            detail = str(cleanup_error) if cleanup_error is not None else cleanup_err
+            run_error.add_note(f"Exact-name container cleanup failed (exit {cleanup_code}): {detail}")
+        raise run_error
+    if not cleanup_confirmed:
+        stderr = (stderr + "\nContainer cleanup is uncertain; execution recovery is required. " + cleanup_err).strip()
+        run_code = run_code or 1
+    evidence = {
+        "mode": "container", "runtime": "docker", "network": "none", "image": image,
+        "resource_budget": {"cpus": settings["cpus"], "memory_mb": settings["memory_mb"], "pids_limit": settings["pids_limit"]},
+        "container_name": name, "cleanup_attempted": True,
+        "cleanup_succeeded": cleanup_confirmed,
+        "runtime_recovery_required": not cleanup_confirmed,
+    }
+    if timed_out:
+        stderr = (stderr + "\nContainer command timed out.").strip()
+        run_code = 124
+    return run_code, stdout, stderr, evidence
+
+
+def run_command(command: str, workspace_root: str, cwd: str, timeout: int, max_output_chars: int, download_dir: str = "", execution_state: dict[str, Any] | None = None) -> CommandResult:
+    requested_root = Path(workspace_root).expanduser()
+    if requested_root.is_symlink():
+        raise ValueError("Workspace mount must not be a symbolic link")
+    root = requested_root.resolve()
     workdir = resolve_cwd(workspace_root, cwd)
-    control_snapshot = _snapshot_control_dir(root)
+    control_snapshot = None
+    control_snapshot_taken = False
     started = time.monotonic()
     mutation_restored = False
     try:
-        proc = subprocess.run(
-            ["/bin/bash", "-lc", command],
-            cwd=str(workdir),
-            text=True,
-            capture_output=True,
-            timeout=timeout,
-            env=sanitized_environment(download_dir),
-        )
+        # Resolve configuration from the canonical workspace file at the
+        # backend boundary too. A caller cannot inject mode or resource
+        # settings through the execution API.
+        from execution_state import load_execution_state
+
+        canonical_state = load_execution_state(str(root))
+        from execution_runtime import load_runtime_record
+        if load_runtime_record(root) is not None:
+            raise RuntimeError("Execution is blocked while container recovery is unresolved")
+        if execution_state is not None and execution_state != canonical_state:
+            raise ValueError("Execution state changed or was not loaded from canonical workspace state")
+        state = canonical_state
+        control_snapshot = _snapshot_control_dir(root, exclude_runtime=state.get("mode") == "container")
+        control_snapshot_taken = True
+        evidence: dict[str, Any] = {"mode": "host", "runtime": "host"}
+        if state.get("mode") == "container":
+            code, stdout_raw, stderr_raw, evidence = _docker_run(command, root, workdir, timeout, download_dir, state)
+        elif state.get("mode") == "host":
+            code, stdout_raw, stderr_raw, _timed_out = _run_process(
+                ["/bin/bash", "-lc", command], cwd=str(workdir),
+                env=sanitized_environment(download_dir), timeout=timeout,
+            )
+        else:
+            raise ValueError("Unsupported execution mode")
     finally:
-        mutation_restored = _restore_control_dir(root, control_snapshot)
+        if control_snapshot_taken:
+            mutation_restored = _restore_control_dir(root, control_snapshot, exclude_runtime=state.get("mode") == "container")
     duration = time.monotonic() - started
+    if state.get("mode") == "host" and _timed_out:
+        # Preserve the legacy timeout exception contract after the process
+        # group is fully reaped and native state has been restored.
+        raise subprocess.TimeoutExpired(command, timeout, output=stdout_raw, stderr=stderr_raw)
     if mutation_restored:
         raise RuntimeError(
             "Project command attempted to mutate native-owned .ai-workflow lifecycle files; changes were restored"
         )
-    stdout = redact_text(proc.stdout[-max_output_chars:])
-    stderr = redact_text(proc.stderr[-max_output_chars:])
-    return CommandResult(redact_text(command), str(workdir), proc.returncode, duration, stdout, stderr)
+    stdout = redact_text(stdout_raw[-max_output_chars:])
+    stderr = redact_text(stderr_raw[-max_output_chars:])
+    return CommandResult(redact_text(command), str(workdir), code, duration, stdout, stderr, evidence)
 
 
 def _git_digest(

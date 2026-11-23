@@ -8,6 +8,7 @@ from checkpoint_snapshot import (
     create_workspace_snapshot,
     remove_workspace_snapshot,
 )
+from execution_state import load_execution_state
 from policy import classify, merge_risk
 from project_policy import load_policy_state
 from redaction import redact_text
@@ -393,6 +394,23 @@ class RiskAwareExecutionMixin:
                     ),
                 })
 
+            # Backend selection happens only after deterministic policy,
+            # approval, and any required checkpoint have completed.
+            try:
+                execution_state = load_execution_state(workspace)
+            except Exception as error:
+                self.status = "blocked"
+                detail = redact_text(str(error))
+                self.emit_event({
+                    "kind": "error",
+                    "text": "Blocked command: canonical project execution configuration is invalid or unavailable.",
+                })
+                self._send_result_to_chatgpt(
+                    "Bridge BLOCKED this command because canonical execution state could not be read safely. "
+                    f"A human must repair EXECUTION.json before execution can continue. Error: {detail}"
+                )
+                return
+
             self.status = "running"
             self.current_step = (
                 spec.purpose
@@ -420,6 +438,7 @@ class RiskAwareExecutionMixin:
                     int(self.config.get("command_timeout_seconds", 900)),
                     int(self.config.get("max_output_chars", 24000)),
                     str((download_bundle or {}).get("download_dir") or ""),
+                    execution_state=execution_state,
                 )
             except Exception as error:
                 accumulated.append({"command": display_command, "error": redact_text(str(error))})

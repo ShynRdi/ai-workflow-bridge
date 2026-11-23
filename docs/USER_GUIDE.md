@@ -711,7 +711,19 @@ Mission Control shows the current per-project profile and lets you explicitly ap
 
 - **Strict** adds maximum supervision for remote, network, outside-workspace, and external-state actions.
 - **Balanced** is the recommended default and preserves the normal guarded development behavior.
-- **Isolated Development** reduces friction only for narrowly proven workspace-local setup actions. It is not actual isolation: it provides no OS sandboxing, process isolation, container isolation, network isolation, or VM isolation. Actual execution isolation remains planned for v0.4.
+- **Isolated Development** reduces friction only for narrowly proven workspace-local setup actions. It is a policy profile and does not select an execution backend. Policy decides whether a command may execute; execution configuration decides where it runs.
+
+## Execution isolation
+
+Mission Control’s **Execution Isolation** section shows the project’s canonical execution mode and revision. Host mode runs commands as the current host user without OS or container isolation. Container mode uses Docker with network access disabled, a local image, CPU/memory/pids limits, a read-only root filesystem, and a read-only `.ai-workflow` mount. Docker is defense in depth, not a perfect hostile-code sandbox. The Docker daemon is trusted; the container does not receive the Docker socket. On macOS, Docker Desktop runs Linux containers inside its Linux VM. Docker is the only supported runtime.
+
+Only a human Mission Control action can change execution mode or container settings. The UI action is bound to the exact displayed execution revision and workspace. Container settings accept an image name and resource limits; runtime stays Docker and network stays `none`. Before applying container mode, the native host checks that Docker is available and that the image exists locally. It does not pull, build, log in, or intentionally contact a registry. Switching back to host mode remains available when Docker is broken, unless unresolved container recovery exists.
+
+Read-only execution diagnostics report canonical configuration validity, Docker CLI/daemon status, local image availability, runtime recovery state, and exact container ownership. Diagnostics do not start, stop, or remove containers.
+
+If the native host restarts while a container may remain, an exact runtime journal blocks all new project commands, including host mode. Mission Control requires an explicit human recovery action. It may clear a journal when the exact recorded container is absent, or remove only that exact container after all expected Bridge ownership labels match and then verify absence. Mismatched labels or unavailable Docker retain recovery and require manual review. No command is automatically resumed or replayed.
+
+The journal makes a possibly orphaned container identifiable; it does not make command execution transactional. A crash can interrupt a Docker operation or journal write. Container execution does not roll back workspace files, Git metadata, database changes, or external side effects.
 
 Applying a profile is a revision-bound compare-and-set against the policy state displayed in Mission Control. If it changes elsewhere, the stale action fails closed. LLMs cannot choose profiles. Profile changes are blocked during command execution, recovery, pending approvals, or other active workflow windows; they never resume execution, approve a command, accept a checkpoint, or accept a stage review. Immutable destructive and credential-path blocks remain active under every profile. LLM risk can only escalate the deterministic decision. Compound shell/control/redirection/substitution syntax is rejected before Isolated Development can lower a decision.
 

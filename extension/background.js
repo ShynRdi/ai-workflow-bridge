@@ -1,6 +1,7 @@
 importScripts(
   "providers.js",
   "conversation-identity.js",
+  "execution-sender.js",
 );
 
 const NATIVE_HOST = "io.github.shynrdi.ai_workflow_bridge";
@@ -1426,6 +1427,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   if (message?.type === "BRIDGE_COMMAND") {
     const command = message.payload || {};
+    if (["execution_configuration_change", "execution_recovery_resolve"].includes(command.action) &&
+        !globalThis.AWB_EXECUTION_SENDER.isTrustedMissionControlSender(
+          sender, chrome.runtime.id, chrome.runtime.getURL("sidepanel.html"))) {
+      sendResponse({ ok: false, error: "Privileged execution actions require the trusted Mission Control side panel." });
+      return false;
+    }
     (async () => {
       if (command.action === "ping") sendNative({ type: "ping" });
       else if (command.action === "get_state") sendNative({ type: "get_state" });
@@ -1544,6 +1551,22 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           expected_policy_revision: expectedRevision,
         });
         return { ok: true, requested: "policy_profile_change" };
+      } else if (command.action === "execution_configuration_change") {
+        const expectedRevision = String(command.expected_execution_revision || "").trim();
+        const expectedWorkspace = String(command.expected_workspace || "").trim();
+        if (!expectedRevision || !expectedWorkspace) throw new Error("Displayed execution revision and workspace are required.");
+        sendNative({ type: "execution_configuration_change", expected_execution_revision: expectedRevision,
+          expected_workspace: expectedWorkspace, mode: command.mode, image: command.image,
+          cpus: command.cpus, memory_mb: command.memory_mb, pids_limit: command.pids_limit });
+        return { ok: true, requested: "execution_configuration_change" };
+      } else if (command.action === "execution_recovery_resolve") {
+        if (!command.expected_runtime_revision || !command.expected_workspace) throw new Error("Displayed recovery identity is required.");
+        sendNative({ type: "execution_recovery_resolve", expected_runtime_revision: command.expected_runtime_revision,
+          expected_workspace: command.expected_workspace });
+        return { ok: true, requested: "execution_recovery_resolve" };
+      } else if (command.action === "execution_diagnostics") {
+        sendNative({ type: "execution_diagnostics", request_id: crypto.randomUUID() });
+        return { ok: true, requested: "execution_diagnostics" };
       } else if (command.action === "diagnostics") {
         return {
           ok: true,

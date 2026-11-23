@@ -4,6 +4,8 @@ import threading
 from typing import Any
 from config import save_config
 from diagnostics import collect_diagnostics
+from execution_state import load_execution_state, docker_readiness
+from execution_runtime import inspect_runtime
 
 class MessageMixin:
     def handle(self, message: dict[str, Any]) -> None:
@@ -15,6 +17,8 @@ class MessageMixin:
             "get_state",
             "recovery_prepare",
             "recovery_discard",
+            "execution_recovery_resolve",
+            "execution_diagnostics",
         }
 
         if (
@@ -72,6 +76,40 @@ class MessageMixin:
                     "text": f"Policy profile change was not applied: {error}",
                 })
                 self.emit({"kind": "state", "state": self.state()})
+            return
+
+        if msg_type == "execution_configuration_change":
+            try:
+                self.change_execution_configuration(message)
+            except Exception as error:
+                self.emit_event({"kind": "error", "text": f"Execution settings were not applied: {error}"})
+                self.emit({"kind": "state", "state": self.state()})
+            return
+
+        if msg_type == "execution_recovery_resolve":
+            try:
+                self.resolve_execution_recovery(str(message.get("expected_runtime_revision") or ""), str(message.get("expected_workspace") or ""))
+            except Exception as error:
+                self.emit_event({"kind": "error", "status": "execution_recovery_required",
+                                 "text": f"Execution recovery was not resolved: {error}"})
+                self.emit({"kind": "state", "state": self.state()})
+            return
+
+        if msg_type == "execution_diagnostics":
+            workspace = str(self.config.get("workspace_root") or "").strip()
+            result = {"mode": "unknown", "summary": "No valid workspace is configured"}
+            if workspace:
+                try:
+                    state = load_execution_state(workspace)
+                    ready = docker_readiness(workspace, state["container"]["image"])
+                    result = {"mode": state["mode"], "revision": state["revision"], "runtime": "docker",
+                              "image": state["container"]["image"], "network": "none",
+                              "cpus": state["container"]["cpus"], "memory_mb": state["container"]["memory_mb"],
+                              "pids_limit": state["container"]["pids_limit"], "readiness": ready,
+                              "runtime_recovery": inspect_runtime(workspace)}
+                except Exception as error:
+                    result = {"mode": "invalid", "summary": "Canonical execution state or runtime journal is invalid; execution is blocked."}
+            self.emit({"kind": "execution_diagnostics_result", "request_id": str(message.get("request_id") or ""), "diagnostics": result})
             return
 
         if msg_type == "stage_review_collect":

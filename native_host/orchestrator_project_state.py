@@ -25,6 +25,8 @@ from project_policy import (
     change_policy_profile,
     policy_summary,
 )
+from execution_state import load_execution_state, apply_execution_configuration, docker_readiness
+from execution_runtime import inspect_runtime, resolve_runtime_recovery
 
 
 class ProjectStateMixin:
@@ -65,6 +67,10 @@ class ProjectStateMixin:
             if workspace and Path(workspace).expanduser().is_dir():
                 project_state = project_state_summary(workspace, state)
                 project_state["policy"] = policy_summary(workspace)
+                execution = load_execution_state(workspace)
+                readiness = docker_readiness(workspace, execution["container"]["image"]) if execution["mode"] == "container" else {"summary": "Not checked while host mode is selected."}
+                project_state["execution"] = {**execution, "readiness": readiness}
+                project_state["execution_recovery"] = inspect_runtime(workspace)
         except Exception as error:
             project_state_error = str(error)
         base = super().state()
@@ -510,6 +516,57 @@ PROJECT-LOCAL ROADMAP AUTHORITY
             "status": "review_required",
             "text": "Structured stage review collected; inspect it and choose Accept Stage or Continue Work.",
         })
+        self.emit({"kind": "state", "state": self.state()})
+
+    def _execution_controls_inert(self) -> None:
+        workspace = self._workspace_root()
+        if not workspace or not Path(workspace).expanduser().is_dir():
+            raise ValueError("A valid workspace is required for execution settings")
+        if bool(getattr(self, "command_execution_active", False)):
+            raise ValueError("Execution settings are locked while a command is active")
+        if getattr(self, "pending", {}):
+            raise ValueError("Execution settings are locked while approval is pending")
+        if getattr(self, "download_waiters", {}):
+            raise ValueError("Execution settings are locked while a browser download is active")
+        timer = getattr(self, "pending_send_timer", None)
+        if timer is not None and timer.is_alive():
+            raise ValueError("Execution settings are locked while an outbound continuation is in flight")
+        if getattr(self, "checkpoint_recovery_context", None):
+            raise ValueError("Execution settings are locked during checkpoint recovery")
+        allowed = {"setup", "ready_to_arm", "idle", "paused", "protocol_error", "protocol_blocked"}
+        if str(getattr(self, "lifecycle", "")) not in allowed:
+            raise ValueError("Execution settings require a paused or otherwise inert workflow state")
+        if inspect_runtime(workspace).get("required"):
+            raise ValueError("Execution settings are locked while container recovery is unresolved")
+
+    def change_execution_configuration(self, message: dict[str, Any]) -> None:
+        self._execution_controls_inert()
+        workspace = self._workspace_root()
+        expected_workspace = str(message.get("expected_workspace") or "").strip()
+        if not expected_workspace or str(Path(expected_workspace).expanduser().resolve()) != str(Path(workspace).expanduser().resolve()):
+            raise ValueError("Displayed workspace changed; refresh Mission Control before applying settings")
+        result = apply_execution_configuration(
+            workspace,
+            mode=str(message.get("mode") or ""),
+            expected_revision=str(message.get("expected_execution_revision") or ""),
+            image=str(message.get("image") or ""), cpus=message.get("cpus", 2.0),
+            memory_mb=message.get("memory_mb", 2048), pids_limit=message.get("pids_limit", 256),
+        )
+        self.emit_event({"kind": "execution_configuration_changed", "status": self.status,
+                         "text": "Execution configuration changed by explicit human action; no workflow action was resumed."})
+        self.emit({"kind": "state", "state": self.state()})
+
+    def resolve_execution_recovery(self, expected_revision: str, expected_workspace: str) -> None:
+        workspace = self._workspace_root()
+        if not workspace or not Path(workspace).expanduser().is_dir():
+            raise ValueError("A valid workspace is required for execution recovery")
+        if not expected_workspace or str(Path(expected_workspace).expanduser().resolve()) != str(Path(workspace).expanduser().resolve()):
+            raise ValueError("Displayed workspace changed; refresh Mission Control before recovery")
+        allowed = {"setup", "ready_to_arm", "idle", "paused", "protocol_error", "protocol_blocked", "recovery_required"}
+        if str(getattr(self, "lifecycle", "")) not in allowed or getattr(self, "command_execution_active", False):
+            raise ValueError("Execution recovery requires an idle or paused workflow")
+        result = resolve_runtime_recovery(workspace, expected_revision)
+        self.emit_event({"kind": "execution_recovery_resolved", "text": "Execution recovery was explicitly reviewed; no command was resumed."})
         self.emit({"kind": "state", "state": self.state()})
 
     def change_security_policy_profile(

@@ -4,6 +4,12 @@ All notable public changes will be documented here. This project follows Semanti
 
 ## [Unreleased]
 
+- Added native-owned per-project execution isolation controls in Mission Control. Human settings are revision-bound and separate from command policy; Docker runtime and network `none` remain fixed.
+- Added read-only, bounded Docker readiness and execution diagnostics with local-image-only checks.
+- Added durable exact-container runtime journaling, restart detection, explicit human recovery, and fail-closed execution while recovery remains unresolved.
+- Added exact Bridge ownership labels and confirmed exact-container cleanup; no automatic command replay or broad cleanup.
+- Documented host/container trust boundaries, Docker Desktop’s Linux VM, and non-transactional command effects.
+
 ## [0.3.6] - 2026-11-23
 
 ### Added
