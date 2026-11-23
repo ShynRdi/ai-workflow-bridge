@@ -2,13 +2,21 @@
 
 All notable public changes will be documented here. This project follows Semantic Versioning where Chrome extension version constraints allow it.
 
-## [Unreleased]
+## [0.4] - 2026-11-23
 
-- Added native-owned per-project execution isolation controls in Mission Control. Human settings are revision-bound and separate from command policy; Docker runtime and network `none` remain fixed.
-- Added read-only, bounded Docker readiness and execution diagnostics with local-image-only checks.
-- Added durable exact-container runtime journaling, restart detection, explicit human recovery, and fail-closed execution while recovery remains unresolved.
-- Added exact Bridge ownership labels and confirmed exact-container cleanup; no automatic command replay or broad cleanup.
-- Documented host/container trust boundaries, Docker Desktop’s Linux VM, and non-transactional command effects.
+### Added
+
+- Added optional Docker container execution, selected per project through native-owned `.ai-workflow/EXECUTION.json`; host remains the legacy/default mode. Human Mission Control changes are bound to the exact displayed revision.
+- Added dedicated writable workspace mounts and a read-only native `.ai-workflow` control mount, with CPU, memory, and PID budgets, read-only container root, and `--network none`.
+- Added process-tree termination on command timeout, plus read-only Docker and execution diagnostics.
+- Added durable `.ai-workflow/EXECUTION_RUNTIME.json` journaling before launch, exact-container restart detection, and explicit human orphan recovery. Unresolved recovery blocks execution and configuration changes; recovery never replays commands.
+
+### Security
+
+- Hardened pre-publication container boundaries: `/` cannot be a writable project workspace; host credentials and environment are not forwarded; `docker.sock` is not mounted; images must exist locally, with no automatic pull, build, or login.
+- Enforced a strict canonical execution-state schema, fsynced the durable journal before launch, and coordinated configuration, launch, and recovery with shared locking.
+- Required trusted Mission Control sender checks and exact Bridge ownership labels. Cleanup uses the full immutable 64-character Docker ID; a same-name replacement cannot redirect deletion.
+- Docker is defense in depth, not a hostile multi-tenant sandbox. The Docker daemon remains trusted. Container execution is not transactional: filesystem, Git, database, and external effects may persist. Recovery is explicit and human-controlled, with no automatic command replay. These findings were fixed before publication; no vulnerable public v0.4 release existed.
 
 ## [0.3.6] - 2026-11-23
 
