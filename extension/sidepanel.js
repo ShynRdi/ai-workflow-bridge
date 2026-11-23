@@ -644,6 +644,43 @@ function renderPolicyProfile(projectState = {}, state = {}) {
   apply.disabled = locked;
   globalThis.AWB_POLICY_PROFILE_IDENTITY.bind(apply, locked ? null : policy);
 }
+function renderExecution(projectState = {}, state = {}) {
+  const execution = projectState.execution || null;
+  const recovery = projectState.execution_recovery || { required: false };
+  const invalid = Boolean(projectState.error) || !execution?.revision;
+  const mode = invalid ? "invalid" : (execution?.mode || "host");
+  const workspace = String(state.config?.workspace_root || "");
+  $("executionMode").textContent = mode.toUpperCase();
+  $("executionRevision").textContent = `Revision ${execution?.revision || "—"}`;
+  $("executionHostWarning").classList.toggle("hidden", mode !== "host");
+  $("executionContainerSettings").classList.toggle("hidden", mode !== "container");
+  $("executionImageCurrent").textContent = execution?.container?.image || "—";
+  $("executionCpuCurrent").textContent = execution?.container?.cpus ?? "—";
+  $("executionMemoryCurrent").textContent = execution?.container?.memory_mb ?? "—";
+  $("executionPidsCurrent").textContent = execution?.container?.pids_limit ?? "—";
+  $("executionReadiness").textContent = execution?.readiness?.summary || "Run read only diagnostics";
+  $("executionModeSelect").value = mode;
+  $("executionImage").value = execution?.container?.image || "";
+  $("executionCpus").value = execution?.container?.cpus ?? 2;
+  $("executionMemory").value = execution?.container?.memory_mb ?? 2048;
+  $("executionPids").value = execution?.container?.pids_limit ?? 256;
+  const allowed = ["setup", "ready_to_arm", "idle", "paused", "protocol_error", "protocol_blocked"];
+  const locked = invalid || !allowed.includes(state.lifecycle || state.status) || state.command_execution_active === true ||
+    (state.pending_approvals || []).length > 0 || recovery.required === true;
+  for (const id of ["executionModeSelect", "executionImage", "executionCpus", "executionMemory", "executionPids", "applyExecution"]) $(id).disabled = locked;
+  const containerMode = $("executionModeSelect").value === "container";
+  for (const id of ["executionImage", "executionCpus", "executionMemory", "executionPids"]) $(id).disabled = locked || !containerMode;
+  $("executionLock").textContent = locked ? "Settings are locked during active work, approval, recovery, or other non idle states." : "Container mode uses Docker, network none, and the displayed resource limits.";
+  globalThis.AWB_EXECUTION_IDENTITY.bind($("applyExecution"), invalid ? null : execution, workspace);
+  const recoveryBox = $("executionRecovery");
+  recoveryBox.classList.toggle("hidden", recovery.required !== true);
+  if (recovery.required) {
+    $("executionRecoverySummary").textContent = `${recovery.summary || "Recovery must be reviewed."} New commands are blocked until resolved.`;
+    const actionable = ["absent", "owned"].includes(recovery.inspection);
+    $("resolveExecutionRecovery").disabled = !actionable || state.command_execution_active === true;
+    globalThis.AWB_EXECUTION_IDENTITY.bindRecovery($("resolveExecutionRecovery"), recovery, workspace);
+  }
+}
 function handleEvent(event) { if (!event) return; if (event.kind === "host_status") {
     if (event.connecting) {
       $("hostStatus").textContent = "CONNECTING";
@@ -653,7 +690,7 @@ function handleEvent(event) { if (!event) return; if (event.kind === "host_statu
       $("hostStatusDetail").textContent = event.text || "Native Messaging";
       addLog(event.connected ? "KAPOW" : "UH-OH", event.text || "Host status changed");
     }
-  } else if (event.kind === "state") { const state = event.state || {}; lastState = state; const lifecycle = state.lifecycle || state.status || "setup"; $("runStatus").textContent = String(lifecycle).replaceAll("_", " ").toUpperCase(); $("runStatusDetail").textContent = state.current_step || "No active workflow"; fillConfig(state.config || {}); fillBudget(state.budget || {}, state.config || {}); renderCheckpoint(state); renderRecovery(state); renderStageReview(state.project_state || {}); renderPolicyProfile(state.project_state || {}, state); setLifecycleButtons(state); if (state.active_provider_name) { $("activeProvider").textContent = state.active_provider_name.toUpperCase().slice(0,13); $("providerDetail").textContent = "active browser adapter"; } } else if (event.kind === "recovery_resolved") {
+  } else if (event.kind === "execution_diagnostics_result") { const d = event.diagnostics || {}; $("executionDiagnosticsSummary").textContent = d.summary || `Docker readiness: ${d.readiness?.summary || "unknown"}; mode: ${d.mode || "unknown"}.`; $("executionReadiness").textContent = d.readiness?.summary || d.summary || "Unknown"; addLog("EXECUTION", $("executionDiagnosticsSummary").textContent); } else if (event.kind === "state") { const state = event.state || {}; lastState = state; const lifecycle = state.lifecycle || state.status || "setup"; $("runStatus").textContent = String(lifecycle).replaceAll("_", " ").toUpperCase(); $("runStatusDetail").textContent = state.current_step || "No active workflow"; fillConfig(state.config || {}); fillBudget(state.budget || {}, state.config || {}); renderCheckpoint(state); renderRecovery(state); renderStageReview(state.project_state || {}); renderPolicyProfile(state.project_state || {}, state); renderExecution(state.project_state || {}, state); setLifecycleButtons(state); if (state.active_provider_name) { $("activeProvider").textContent = state.active_provider_name.toUpperCase().slice(0,13); $("providerDetail").textContent = "active browser adapter"; } } else if (event.kind === "recovery_resolved") {
     $("recoveryPanel")?.classList.add("hidden");
     addLog(
       "RECOVERED",
@@ -742,6 +779,17 @@ $("applyPolicyProfile").addEventListener("click", async (event) => {
     addLog("POLICY", "Explicit policy profile change requested for the displayed project policy state.");
   } catch (error) { addLog("CRASH", String(error?.message || error)); }
 });
+$("executionModeSelect").addEventListener("change", () => { const enabled = $("executionModeSelect").value === "container"; for (const id of ["executionImage", "executionCpus", "executionMemory", "executionPids"]) $(id).disabled = !enabled || $("applyExecution").disabled; });
+$("applyExecution").addEventListener("click", async (event) => {
+  try {
+    const mode = $("executionModeSelect").value;
+    const fields = mode === "container" ? { mode, image: $("executionImage").value.trim(), cpus: Number($("executionCpus").value), memory_mb: Number($("executionMemory").value), pids_limit: Number($("executionPids").value) } : { mode, image: $("executionImage").value.trim(), cpus: Number($("executionCpus").value), memory_mb: Number($("executionMemory").value), pids_limit: Number($("executionPids").value) };
+    await command("execution_configuration_change", globalThis.AWB_EXECUTION_IDENTITY.actionPayload(event.currentTarget, fields));
+    addLog("EXECUTION", "Human execution settings change requested for the displayed project revision.");
+  } catch (error) { addLog("CRASH", String(error?.message || error)); }
+});
+$("executionDiagnostics").addEventListener("click", async () => { try { await command("execution_diagnostics"); addLog("EXECUTION", "Read only Docker and execution diagnostics requested."); } catch (error) { addLog("CRASH", String(error?.message || error)); } });
+$("resolveExecutionRecovery").addEventListener("click", async (event) => { try { await command("execution_recovery_resolve", globalThis.AWB_EXECUTION_IDENTITY.recoveryPayload(event.currentTarget)); addLog("RECOVER", "Explicit execution recovery requested for the displayed runtime record."); } catch (error) { addLog("CRASH", String(error?.message || error)); } });
 $("collectStageReview").addEventListener("click", async () => {
   try { await command("stage_review_collect"); addLog("REVIEW", "Collecting current structured Git evidence for human review."); }
   catch (error) { addLog("CRASH", String(error?.message || error)); }

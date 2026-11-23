@@ -26,7 +26,7 @@ Protected examples include dependency changes, remote Git publication, migration
 
 Each workspace has native-host-owned policy state at `<workspace>/.ai-workflow/POLICY.json`. Missing legacy state resolves to the backward-compatible **Balanced** profile. The file is revisioned and protected with the same no-follow/atomic-write discipline as other native state.
 
-**Strict** adds stronger restrictions for remote, network, and outside-workspace actions. **Balanced** preserves normal guarded development behavior and is the backward-compatible default for legacy projects. **Isolated Development** may allow only narrowly proven workspace-local setup actions; it does **not** provide OS sandboxing, process isolation, container isolation, network isolation, or VM isolation. Actual execution isolation remains planned for v0.4.
+**Strict** adds stronger restrictions for remote, network, and outside-workspace actions. **Balanced** preserves normal guarded development behavior and is the backward-compatible default for legacy projects. **Isolated Development** may allow only narrowly proven workspace-local setup actions; it does **not** select or provide execution isolation. Policy determines whether a command may execute. The separate execution configuration determines where an allowed command runs.
 
 Only an explicit human Mission Control action can change a profile. The action is bound to the exact displayed policy revision, so stale UI actions fail closed. LLM contracts and generic configuration cannot select or relax a profile. Profile changes are blocked during recovery, command execution, pending approvals, and active workflow windows; they never replay commands, resume work, or accept checkpoints or stage reviews.
 
@@ -90,6 +90,22 @@ Review collection and inspection use only read-only Git operations. Checkpoint r
 System diagnostics are designed as read-only health inspection. Running diagnostics does not request new provider permissions, inject a content script, submit an LLM prompt or execute a project command.
 
 Diagnostics may report a warning when a provider tab/content script is unavailable rather than mutating browser state to repair it automatically.
+
+### Execution isolation and Docker boundary
+
+The native host owns canonical per-project `<workspace>/.ai-workflow/EXECUTION.json`. Only explicit human Mission Control actions can change host/container mode or image and resource budgets. The action uses compare-and-set against the exact execution revision displayed by the UI and also binds to the displayed workspace. Generic `config.json` and workflow contracts cannot choose execution mode or alter Docker settings. The deterministic policy, approval, and checkpoint sequence remains authoritative and runs before backend selection.
+
+Host mode executes as the current host user and has no OS/container isolation. Container mode supports Docker only, uses `--network none`, local images only, CPU/memory/pids budgets, a read-only root, and a read-only `.ai-workflow` mount. It does not mount `docker.sock`, forward the host environment, or expose arbitrary mounts, capabilities, devices, network modes, Docker arguments, or entrypoints. `--pull=never` and local image inspection prevent intentional registry access during preflight and execution. Docker Desktop on macOS runs Linux containers inside a Linux VM.
+
+The Docker daemon and host remain trusted. This is defense in depth, not a perfect hostile-code or multi-tenant boundary. Docker bugs, kernel/runtime vulnerabilities, resource behavior, and host-level effects remain possible. Docker execution does not roll back workspace files, `.git` metadata, database changes, or external side effects.
+
+### Durable container recovery
+
+Before Docker can create a container, the native host atomically writes a bounded, project-local `<workspace>/.ai-workflow/EXECUTION_RUNTIME.json` containing an opaque execution identity, exact Bridge-generated container name, hashed workspace identity, runtime, timestamp, and state. The file and parent directory are fsynced before Docker launch. It contains no command, secrets, raw environment, Docker auth, host home, or absolute workspace path. All required Bridge ownership labels must match the journal exactly; unrelated Docker labels are allowed. Cleanup uses the immutable ID returned by inspection, then verifies that same ID is absent. Configuration updates, launch claims, and explicit recovery share a project-local coordination lock, with runtime journal lock acquired second.
+
+After a restart, a valid journal never resumes the command or silently removes a container. It blocks new command execution in both host and container mode and is shown in Mission Control. Recovery is an explicit human action bound to that exact journal revision. If the exact name is absent, the human can clear the stale record. If it exists, removal is allowed only after exact Bridge labels match, and journal clearing waits for confirmed absence. Label mismatch, malformed journal, or unavailable/uncertain Docker inspection fails closed and retains the record for manual review. Cleanup never enumerates containers for deletion and never uses broad prune operations.
+
+The journal makes container identity recoverable after parent-process failure; it does not make the command transactional. SIGKILL or power loss can interrupt writes or Docker operations. Filesystem changes, Git metadata, databases, and external effects are not automatically undone. No command is automatically replayed.
 
 ## Known limitations
 

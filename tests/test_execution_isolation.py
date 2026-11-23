@@ -17,9 +17,21 @@ if str(HOST) not in sys.path:
     sys.path.insert(0, str(HOST))
 
 import runner
+import execution_runtime
 import orchestrator_risk
 from execution_state import load_execution_state, update_execution_state
 from contracts import CommandSpec, WorkflowContract, extract_contract
+
+
+def _mock_owned_cleanup(monkeypatch, container_id="a" * 64):
+    def inspect_record(_root, record):
+        return {"container_id": container_id, "container_name": record["container_name"],
+                "labels": {"ai-workflow-bridge.managed": "true",
+                           "ai-workflow-bridge.execution": record["execution_id"],
+                           "ai-workflow-bridge.workspace": record["workspace_identity"]},
+                "ownership_status": "owned", "inspection": "owned"}
+    monkeypatch.setattr(execution_runtime, "inspect_container_record", inspect_record)
+    monkeypatch.setattr(execution_runtime, "inspect_container_id", lambda _root, _id: {"inspection": "absent"})
 
 
 def test_missing_execution_state_is_workspace_bound_host_default(tmp_path):
@@ -137,6 +149,7 @@ def test_docker_argv_has_required_boundaries_and_no_host_secrets(monkeypatch, tm
         return 0, "", "", False
     monkeypatch.setattr(runner.shutil, "which", lambda _name: "/usr/bin/docker")
     monkeypatch.setattr(runner, "_run_process", fake_process)
+    _mock_owned_cleanup(monkeypatch)
     current = load_execution_state(str(tmp_path))
     state = update_execution_state(str(tmp_path), mode="container", expected_revision=current["revision"],
                                    image="python:3.12", cpus=1.5, memory_mb=768, pids_limit=128)
@@ -175,7 +188,7 @@ def test_docker_argv_has_required_boundaries_and_no_host_secrets(monkeypatch, tm
     assert "should-not-forward" not in argv
     assert "should-not-forward" not in str(next(call[2] for call in calls if call[0][1:2] == ["run"]))
     assert result.execution["mode"] == "container"
-    assert calls[-1][0] == ["/usr/bin/docker", "rm", "-f", argv[argv.index("--name") + 1]]
+    assert ["/usr/bin/docker", "rm", "-f", "a" * 64] in [call[0] for call in calls]
 
 
 def test_host_timeout_kills_child_process_group(tmp_path):
@@ -218,8 +231,11 @@ def test_workspace_mount_with_spaces_and_colon_is_one_argv_value(monkeypatch, tm
         return 0, "ok", "", False
     monkeypatch.setattr(runner.shutil, "which", lambda _name: "/usr/bin/docker")
     monkeypatch.setattr(runner, "_run_process", fake_process)
+    _mock_owned_cleanup(monkeypatch)
+    current = load_execution_state(str(workspace))
+    state = update_execution_state(str(workspace), mode="container", expected_revision=current["revision"], image="python:3.12")
     runner._docker_run("echo x", workspace, workspace, 5, "", {
-        "container": {"image": "python:3.12", "cpus": 1, "memory_mb": 512, "pids_limit": 64}
+        **state
     })
     argv = next(argv for argv in calls if argv[1:2] == ["run"])
     assert argv[argv.index("--mount") + 1] == f"type=bind,src={workspace.resolve()},dst=/workspace"
@@ -258,11 +274,12 @@ def test_docker_runner_exception_still_cleans_exact_container(monkeypatch, tmp_p
         return 0, "ok", "", False
     monkeypatch.setattr(runner.shutil, "which", lambda _name: "/usr/bin/docker")
     monkeypatch.setattr(runner, "_run_process", fake_process)
+    _mock_owned_cleanup(monkeypatch)
     with pytest.raises(OSError, match="unexpectedly"):
         runner.run_command("echo x", str(tmp_path), ".", 5, 100, execution_state=state)
     run_argv = next(argv for argv in calls if argv[1:2] == ["run"])
     name = run_argv[run_argv.index("--name") + 1]
-    assert calls[-1] == ["/usr/bin/docker", "rm", "-f", name]
+    assert ["/usr/bin/docker", "rm", "-f", "a" * 64] in calls
 
 
 def test_container_failure_never_falls_back_to_host(monkeypatch, tmp_path):
@@ -285,11 +302,12 @@ def test_container_timeout_removes_only_its_unique_container(monkeypatch, tmp_pa
         return 0, "", "", False
     monkeypatch.setattr(runner.shutil, "which", lambda _name: "/usr/bin/docker")
     monkeypatch.setattr(runner, "_run_process", fake_process)
+    _mock_owned_cleanup(monkeypatch)
     result = runner.run_command("sleep 10", str(tmp_path), ".", 1, 100, execution_state=state)
     run_argv = next(argv for argv in calls if argv[1:2] == ["run"])
-    cleanup = calls[-1]
+    cleanup = [call for call in calls if call[:3] == ["/usr/bin/docker", "rm", "-f"]][-1]
     assert result.exit_code == 124
-    assert cleanup == ["/usr/bin/docker", "rm", "-f", run_argv[run_argv.index("--name") + 1]]
+    assert cleanup == ["/usr/bin/docker", "rm", "-f", "a" * 64]
     assert "ai-workflow-bridge.managed=true" in run_argv
 
 

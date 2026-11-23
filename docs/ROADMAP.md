@@ -45,10 +45,12 @@ This roadmap is directional and does not promise dates.
 
 ## 0.4 — Execution isolation
 
-- Optional containerized runner.
-- Dedicated workspace mounts.
-- Process-tree termination and resource budgets.
-- Network restrictions where supported.
+- Human-only, revision-bound per-project host/container configuration in Mission Control; policy remains the independent authority for whether commands may run.
+- Docker-only container execution with local-image-only preflight, `network=none`, resource budgets, read-only root and read-only native control mount.
+- Read-only Docker and execution diagnostics with bounded timeouts.
+- Durable exact-container runtime journal, restart/orphan detection, explicit human-only recovery, and fail-closed execution while recovery remains unresolved.
+- Exact-name cleanup with ownership-label verification; no broad Docker cleanup and no automatic command replay.
+- Document Docker daemon trust, the macOS Docker Desktop VM, and the fact that container commands are not transactional rollback.
 
 ## 0.4.x — Structured capabilities
 

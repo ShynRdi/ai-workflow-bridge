@@ -8,6 +8,7 @@ import math
 import os
 import re
 import stat
+import shutil
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -143,6 +144,18 @@ def update_execution_state(
     image: str = "", cpus: float = 2.0, memory_mb: int = 2048,
     pids_limit: int = 256,
 ) -> dict[str, Any]:
+    from execution_runtime import coordination_lock
+    with coordination_lock(workspace_root):
+        return _update_execution_state_locked(workspace_root, mode=mode, expected_revision=expected_revision,
+                                              image=image, cpus=cpus, memory_mb=memory_mb, pids_limit=pids_limit)
+
+
+def _update_execution_state_locked(
+    workspace_root: str, *, mode: str, expected_revision: str,
+    image: str = "", cpus: float = 2.0, memory_mb: int = 2048,
+    pids_limit: int = 256,
+) -> dict[str, Any]:
+    from execution_runtime import load_runtime_record
     control, _, _ = control_paths(workspace_root)
     control.mkdir(parents=True, exist_ok=True)
     lock_path = control / EXECUTION_LOCK_FILE
@@ -159,6 +172,8 @@ def update_execution_state(
         current = load_execution_state(workspace_root)
         if not isinstance(expected_revision, str) or expected_revision != current["revision"]:
             raise ValueError("Execution state is stale; refresh before changing it")
+        if load_runtime_record(workspace_root) is not None:
+            raise ValueError("Execution settings cannot change while container recovery is unresolved")
         state = _validate({
             "version": EXECUTION_VERSION, "mode": mode, "revision": uuid.uuid4().hex,
             "updated_at": now_iso(),
@@ -176,3 +191,60 @@ def update_execution_state(
             os.close(fd)
     state["persisted"] = True
     return state
+
+
+def docker_readiness(workspace_root: str, image: str, *, timeout: float = 8) -> dict[str, Any]:
+    """Read-only, local-image-only Docker preflight. Never pulls or builds."""
+    from runner import _run_process, sanitized_environment
+    docker = shutil.which("docker")
+    if not docker:
+        return {"ready": False, "cli_available": False, "daemon_reachable": False,
+                "image_local": False, "summary": "Docker CLI is unavailable"}
+    env = sanitized_environment()
+    try:
+        code, version, _err, timed_out = _run_process(
+            [docker, "version", "--format", "{{.Client.Version}}/{{.Server.Version}}"],
+            cwd=workspace_root, env=env, timeout=timeout)
+    except Exception:
+        code, version, timed_out = 1, "", False
+    if code != 0 or timed_out:
+        return {"ready": False, "cli_available": True, "daemon_reachable": False,
+                "image_local": None, "summary": "Docker daemon is unavailable"}
+    version_text = version.strip()
+    if not re.fullmatch(r"[0-9][A-Za-z0-9.+_-]{0,63}/[0-9][A-Za-z0-9.+_-]{0,63}", version_text):
+        version_text = "available"
+    if not image:
+        return {"ready": False, "cli_available": True, "daemon_reachable": True,
+                "image_local": None, "version": version_text,
+                "summary": "Docker daemon is reachable; no container image is configured"}
+    argv = [docker, "image", "inspect", "--format", "{{.Id}}", image]
+    try:
+        code, _out, _err, timed_out = _run_process(argv, cwd=workspace_root, env=env, timeout=timeout)
+    except Exception:
+        code, timed_out = 1, False
+    if code != 0 or timed_out:
+        return {"ready": False, "cli_available": True, "daemon_reachable": True,
+                "image_local": False, "version": version_text,
+                "summary": "Docker daemon is reachable but the configured image is not available locally"}
+    return {"ready": True, "cli_available": True, "daemon_reachable": True,
+            "image_local": True, "version": version_text,
+            "summary": "Docker daemon is reachable and image is available locally"}
+
+
+def apply_execution_configuration(workspace_root: str, *, mode: str, expected_revision: str,
+                                  image: str = "", cpus: float = 2.0, memory_mb: int = 2048,
+                                  pids_limit: int = 256) -> dict[str, Any]:
+    # Validate the proposed configuration before preflight, and never ask Docker
+    # to resolve a remote image implicitly.
+    _validate({"version": EXECUTION_VERSION, "mode": mode, "revision": uuid.uuid4().hex,
+               "updated_at": now_iso(), "container": {"runtime": "docker", "image": image,
+               "network": "none", "cpus": cpus, "memory_mb": memory_mb, "pids_limit": pids_limit}})
+    current = load_execution_state(workspace_root)
+    if expected_revision != current["revision"]:
+        raise ValueError("Execution state is stale; refresh before changing it")
+    if mode == "container":
+        ready = docker_readiness(workspace_root, image)
+        if not ready["ready"]:
+            raise ValueError(ready["summary"])
+    return update_execution_state(workspace_root, mode=mode, expected_revision=expected_revision,
+                                  image=image, cpus=cpus, memory_mb=memory_mb, pids_limit=pids_limit)

@@ -61,7 +61,7 @@ def sanitized_environment(download_dir: str = "") -> dict[str, str]:
     return env
 
 
-def _snapshot_control_dir(root: Path) -> dict[str, bytes] | None:
+def _snapshot_control_dir(root: Path, *, exclude_runtime: bool = False) -> dict[str, bytes] | None:
     control = root / CONTROL_DIR_NAME
 
     if control.is_symlink():
@@ -93,6 +93,8 @@ def _snapshot_control_dir(root: Path) -> dict[str, bytes] | None:
                 "Native-owned .ai-workflow contains a non-regular entry"
             )
 
+        if exclude_runtime and path.name in {"EXECUTION_RUNTIME.json", "EXECUTION_RUNTIME.lock"}:
+            continue
         snapshot[str(path.relative_to(control))] = path.read_bytes()
 
     return snapshot
@@ -113,7 +115,7 @@ def _remove_control_entry(control: Path) -> None:
         control.unlink()
 
 
-def _restore_control_dir(root: Path, snapshot: dict[str, bytes] | None) -> bool:
+def _restore_control_dir(root: Path, snapshot: dict[str, bytes] | None, *, exclude_runtime: bool = False) -> bool:
     """Restore native-owned lifecycle files if a project command changed them.
 
     Returns True when mutation was detected and repaired. Symlinked control
@@ -129,7 +131,7 @@ def _restore_control_dir(root: Path, snapshot: dict[str, bytes] | None) -> bool:
         return True
 
     try:
-        current = _snapshot_control_dir(root)
+        current = _snapshot_control_dir(root, exclude_runtime=exclude_runtime)
     except ValueError:
         current = None
 
@@ -224,9 +226,24 @@ def _docker_run(
         raise RuntimeError("Workspace mount cannot be proven safe without native control directory")
     relative_cwd = workdir.relative_to(root).as_posix()
     container_cwd = "/workspace" if relative_cwd == "." else "/workspace/" + relative_cwd
-    argv = [docker, "run", "--name", "aiwb-" + uuid.uuid4().hex,
+    from execution_runtime import (coordination_lock, runtime_lock, create_runtime_record,
+                                   inspect_container_record, inspect_container_id, load_runtime_record,
+                                   write_runtime_record, _clear_locked)
+    # This is the launch claim boundary: configuration mutation uses the same
+    # coordination lock and cannot slip between the gate and durable journal.
+    with coordination_lock(root):
+        from execution_state import load_execution_state
+        current_state = load_execution_state(str(root))
+        if current_state != execution_state:
+            raise RuntimeError("Execution settings changed before container launch")
+        if load_runtime_record(root) is not None:
+            raise RuntimeError("Execution is blocked while container recovery is unresolved")
+        record = create_runtime_record(root)
+        record = write_runtime_record(root, record)
+    argv = [docker, "run", "--name", record["container_name"],
             "--label", "ai-workflow-bridge.managed=true",
-            "--label", "ai-workflow-bridge.workspace=" + hashlib.sha256(workspace_mount.encode()).hexdigest(),
+            "--label", "ai-workflow-bridge.execution=" + record["execution_id"],
+            "--label", "ai-workflow-bridge.workspace=" + record["workspace_identity"],
             "--pull=never", "--network", "none", "--cap-drop=ALL",
             "--security-opt", "no-new-privileges", "--init", "--read-only",
             "--tmpfs", "/tmp:rw,noexec,nosuid,size=64m",
@@ -254,27 +271,54 @@ def _docker_run(
     cleanup_code = 0
     cleanup_err = ""
     run_code, stdout, stderr, timed_out = 1, "", "", False
+    run_attempted = False
+    cleanup_confirmed = False
     try:
+        run_attempted = True
         run_code, stdout, stderr, timed_out = _run_process(
             argv, cwd=str(root), env=sanitized_environment(), timeout=timeout
         )
     except BaseException as error:
         run_error = error
     finally:
-        # The unique name is the only cleanup identity. This finally path also
-        # runs when the subprocess wrapper raises after Docker may have started.
-        try:
-            cleanup_code, _cleanup_out, cleanup_err, _cleanup_timeout = _run_process(
-                [docker, "rm", "-f", name], cwd=str(root), env=env, timeout=10
-            )
-        except BaseException as error:
-            cleanup_error = error
-            cleanup_code = 1
-            cleanup_err = str(error)
+        # Cleanup remains bound to this exact journal object and inspected ID.
+        if run_attempted:
+            try:
+                with coordination_lock(root):
+                    with runtime_lock(root):
+                        current = load_runtime_record(root)
+                        if current is None or current != record:
+                            raise RuntimeError("Execution journal changed; cleanup identity is uncertain")
+                        before_cleanup = inspect_container_record(root, record)
+                        current = load_runtime_record(root)
+                        if current is None or current != record:
+                            raise RuntimeError("Execution journal changed during inspection; cleanup identity is uncertain")
+                        if before_cleanup["inspection"] == "owned":
+                            container_id = before_cleanup["container_id"]
+                            cleanup_code, _cleanup_out, cleanup_err, _cleanup_timeout = _run_process(
+                                [docker, "rm", "-f", container_id], cwd=str(root), env=env, timeout=10
+                            )
+                            if cleanup_code == 0:
+                                after = inspect_container_id(root, container_id)
+                                cleanup_confirmed = after["inspection"] == "absent"
+                        elif before_cleanup["inspection"] == "absent":
+                            cleanup_code = 0
+                            cleanup_confirmed = True
+                        else:
+                            cleanup_code = 1
+                            cleanup_err = "Exact container ownership could not be verified"
+                        if cleanup_confirmed:
+                            _clear_locked(root, record)
+            except BaseException as error:
+                cleanup_error = error
+                cleanup_code = 1
+                cleanup_err = "Exact container ownership or cleanup could not be verified"
+    if not cleanup_confirmed:
+        cleanup_err = cleanup_err or "Execution cleanup could not be verified; journal retained"
     if run_error is not None:
         run_error.container_cleanup = {
             "container_name": name, "attempted": True,
-            "succeeded": cleanup_code == 0 and cleanup_error is None,
+            "succeeded": cleanup_confirmed and cleanup_error is None,
             "exit_code": cleanup_code,
             "error": str(cleanup_error) if cleanup_error is not None else cleanup_err,
         }
@@ -282,15 +326,15 @@ def _docker_run(
             detail = str(cleanup_error) if cleanup_error is not None else cleanup_err
             run_error.add_note(f"Exact-name container cleanup failed (exit {cleanup_code}): {detail}")
         raise run_error
-    if cleanup_code != 0:
-        stderr = (stderr + "\nContainer cleanup failed: " + cleanup_err).strip()
+    if not cleanup_confirmed:
+        stderr = (stderr + "\nContainer cleanup is uncertain; execution recovery is required. " + cleanup_err).strip()
         run_code = run_code or 1
     evidence = {
         "mode": "container", "runtime": "docker", "network": "none", "image": image,
         "resource_budget": {"cpus": settings["cpus"], "memory_mb": settings["memory_mb"], "pids_limit": settings["pids_limit"]},
         "container_name": name, "cleanup_attempted": True,
-        "cleanup_succeeded": cleanup_code == 0,
-        "parent_crash_recovery": "phase-2-hook-required",
+        "cleanup_succeeded": cleanup_confirmed,
+        "runtime_recovery_required": not cleanup_confirmed,
     }
     if timed_out:
         stderr = (stderr + "\nContainer command timed out.").strip()
@@ -304,7 +348,8 @@ def run_command(command: str, workspace_root: str, cwd: str, timeout: int, max_o
         raise ValueError("Workspace mount must not be a symbolic link")
     root = requested_root.resolve()
     workdir = resolve_cwd(workspace_root, cwd)
-    control_snapshot = _snapshot_control_dir(root)
+    control_snapshot = None
+    control_snapshot_taken = False
     started = time.monotonic()
     mutation_restored = False
     try:
@@ -314,9 +359,14 @@ def run_command(command: str, workspace_root: str, cwd: str, timeout: int, max_o
         from execution_state import load_execution_state
 
         canonical_state = load_execution_state(str(root))
+        from execution_runtime import load_runtime_record
+        if load_runtime_record(root) is not None:
+            raise RuntimeError("Execution is blocked while container recovery is unresolved")
         if execution_state is not None and execution_state != canonical_state:
             raise ValueError("Execution state changed or was not loaded from canonical workspace state")
         state = canonical_state
+        control_snapshot = _snapshot_control_dir(root, exclude_runtime=state.get("mode") == "container")
+        control_snapshot_taken = True
         evidence: dict[str, Any] = {"mode": "host", "runtime": "host"}
         if state.get("mode") == "container":
             code, stdout_raw, stderr_raw, evidence = _docker_run(command, root, workdir, timeout, download_dir, state)
@@ -328,7 +378,8 @@ def run_command(command: str, workspace_root: str, cwd: str, timeout: int, max_o
         else:
             raise ValueError("Unsupported execution mode")
     finally:
-        mutation_restored = _restore_control_dir(root, control_snapshot)
+        if control_snapshot_taken:
+            mutation_restored = _restore_control_dir(root, control_snapshot, exclude_runtime=state.get("mode") == "container")
     duration = time.monotonic() - started
     if state.get("mode") == "host" and _timed_out:
         # Preserve the legacy timeout exception contract after the process

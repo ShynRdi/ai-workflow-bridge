@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -28,6 +29,36 @@ def test_extension_confirms_real_llm_submission():
     assert "getUserTurns().length > beforeUserCount" in content
     assert "waitForSendButton" in content
     assert "form.requestSubmit" in content
+
+
+def test_privileged_execution_bridge_commands_require_trusted_sidepanel_sender():
+    background = (EXT / "background.js").read_text()
+    helper = (EXT / "execution-sender.js").read_text()
+    assert "sender.id !== extensionId" in helper
+    assert "sender.tab != null" in helper
+    assert "isTrustedMissionControlSender(" in background
+    route = background[background.index('if (message?.type === "BRIDGE_COMMAND")'):]
+    guard = route.index('!globalThis.AWB_EXECUTION_SENDER.isTrustedMissionControlSender(')
+    first_privileged_forward = route.index('type: "execution_configuration_change"')
+    assert guard < first_privileged_forward
+    assert '"execution_configuration_change", "execution_recovery_resolve"' in route
+    assert 'type: "execution_recovery_resolve"' in route
+    assert '"execution-sender.js"' in background
+
+
+def test_execution_sender_allows_only_internal_sidepanel_sender():
+    helper = EXT / "execution-sender.js"
+    script = f'''require({json.dumps(str(helper))});
+const allow = AWB_EXECUTION_SENDER.isTrustedMissionControlSender;
+const id = "extension-id";
+const ui = "chrome-extension://extension-id/sidepanel.html";
+if (!allow({{id, url:ui}}, id, ui)) process.exit(1);
+if (allow({{id, url:ui, tab:{{id:7}}}}, id, ui)) process.exit(2);
+if (allow({{id:"external-id", url:ui}}, id, ui)) process.exit(3);
+if (allow({{id, url:"https://example.test/sidepanel.html", tab:{{id:7}}}}, id, ui)) process.exit(4);
+if (allow({{id, url:"chrome-extension://extension-id/options.html"}}, id, ui)) process.exit(5);
+'''
+    subprocess.run(["node", "-e", script], check=True)
 
 
 def test_provider_registry_has_major_web_llms():
