@@ -44,6 +44,45 @@ def test_missing_execution_state_is_workspace_bound_host_default(tmp_path):
     assert state_a["revision"] != state_b["revision"]
 
 
+def _write_execution_state(workspace, value):
+    control = workspace / ".ai-workflow"
+    control.mkdir(exist_ok=True)
+    (control / "EXECUTION.json").write_text(json.dumps(value))
+
+
+def _valid_execution_document():
+    return {
+        "version": 1, "mode": "container", "revision": "1" * 32,
+        "updated_at": "2026-11-23T00:00:00+00:00",
+        "container": {"runtime": "docker", "image": "python:3.12", "network": "none",
+                      "cpus": 2.0, "memory_mb": 2048, "pids_limit": 256},
+    }
+
+
+def test_execution_state_rejects_unknown_top_level_key(tmp_path):
+    value = _valid_execution_document()
+    value["future_option"] = True
+    _write_execution_state(tmp_path, value)
+    with pytest.raises(ValueError, match="unknown or missing fields"):
+        load_execution_state(str(tmp_path))
+
+
+def test_execution_state_rejects_unknown_container_key(tmp_path):
+    value = _valid_execution_document()
+    value["container"]["future_option"] = True
+    _write_execution_state(tmp_path, value)
+    with pytest.raises(ValueError, match="unknown or missing fields"):
+        load_execution_state(str(tmp_path))
+
+
+def test_execution_state_accepts_current_v1_schema(tmp_path):
+    _write_execution_state(tmp_path, _valid_execution_document())
+    state = load_execution_state(str(tmp_path))
+    assert state["mode"] == "container"
+    assert state["container"] == _valid_execution_document()["container"]
+    assert state["persisted"]
+
+
 @pytest.mark.parametrize("mutation", [
     {"version": 2}, {"version": 1.0}, {"mode": "podman"},
     {"container": {"runtime": "podman"}},
@@ -388,4 +427,3 @@ def test_checkpoint_completes_before_execution_state_load_and_backend(monkeypatc
     }
     bridge._run_command_and_continue(_contract(), 0, approved_index=0)
     assert trace == ["checkpoint", "execution_state", "runner"]
-

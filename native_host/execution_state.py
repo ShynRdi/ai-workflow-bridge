@@ -75,6 +75,9 @@ def _validate(value: Any) -> dict[str, Any]:
     version = value.get("version") if isinstance(value, dict) else None
     if not isinstance(value, dict) or not isinstance(version, int) or isinstance(version, bool) or version != EXECUTION_VERSION:
         raise ValueError("EXECUTION.json has an unsupported or invalid version")
+    allowed_keys = {"version", "mode", "revision", "updated_at", "container"}
+    if value.keys() != allowed_keys:
+        raise ValueError("EXECUTION.json has unknown or missing fields")
     mode = value.get("mode")
     if mode not in {"host", "container"}:
         raise ValueError("EXECUTION.json mode must be host or container")
@@ -91,6 +94,8 @@ def _validate(value: Any) -> dict[str, Any]:
     raw = value.get("container")
     if not isinstance(raw, dict):
         raise ValueError("EXECUTION.json container settings must be an object")
+    if raw.keys() != DEFAULT_CONTAINER.keys():
+        raise ValueError("EXECUTION.json container settings have unknown or missing fields")
     if raw.get("runtime") != "docker" or raw.get("network") != "none":
         raise ValueError("Only Docker with network none is supported")
     image = raw.get("image")
