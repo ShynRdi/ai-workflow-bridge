@@ -43,12 +43,12 @@ This roadmap is directional and does not promise dates.
 - Explicit revision-bound human profile changes; stale controls fail closed.
 - Isolated Development remains a policy profile only. Execution isolation is planned for v0.4.
 
-## 0.4 — Execution isolation
+## 0.4 — Execution isolation (implemented in Public Preview 0.4)
 
-- Human-only, revision-bound per-project host/container configuration in Mission Control; policy remains the independent authority for whether commands may run.
-- Docker-only container execution with local-image-only preflight, `network=none`, resource budgets, read-only root and read-only native control mount.
+- Human-controlled, revision-bound per-project host/container configuration in Mission Control; policy remains the independent authority for whether commands may run.
+- Optional Docker container execution with a dedicated writable workspace mount and read-only native control mount, local-image-only preflight, `network=none`, resource budgets, and process-tree timeout termination.
 - Read-only Docker and execution diagnostics with bounded timeouts.
-- Durable exact-container runtime journal, restart/orphan detection, explicit human-only recovery, and fail-closed execution while recovery remains unresolved.
+- Durable exact-container runtime journal, restart/orphan detection, explicit human-controlled recovery, and fail-closed execution/configuration while recovery remains unresolved.
 - Exact-name cleanup with ownership-label verification; no broad Docker cleanup and no automatic command replay.
 - Document Docker daemon trust, the macOS Docker Desktop VM, and the fact that container commands are not transactional rollback.
 

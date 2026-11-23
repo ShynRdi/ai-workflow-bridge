@@ -1,4 +1,6 @@
-# AI Workflow Bridge 0.3.6 — Complete User Guide
+# AI Workflow Bridge 0.4 — Complete User Guide
+
+**Public Preview 0.4.** Host is the legacy/default execution mode. Container execution is opt-in and human configured in Mission Control. The Docker image must already exist locally; Bridge does not pull it. Current container execution uses `--network none`, resource budgets, a dedicated writable workspace, and a read-only native `.ai-workflow` control mount. This container mode is distinct from the v0.3.6 **Isolated Development** policy profile, which only affects whether an already-classified command is allowed.
 
 AI Workflow Bridge connects a web LLM conversation to a guarded local runner. The LLM plans and emits a machine-readable workflow contract; the native host executes only approved/local-safe commands, returns stdout/stderr to the same conversation, and stops whenever a human decision or provider safety condition appears.
 
@@ -96,7 +98,7 @@ The Bridge never signs in for you and never asks for your password or cookies.
 
 # 2. Site permissions
 
-Version 0.3.6 does **not** request access to every LLM website at install time.
+The extension does **not** request access to every LLM website at install time.
 
 Choose your Web LLM in **AI Engine + Safety**, then click:
 

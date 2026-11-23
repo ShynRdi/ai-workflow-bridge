@@ -4,7 +4,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_public_docs_and_runtime_versions_are_aligned_with_036():
+def test_public_docs_and_runtime_versions_are_aligned_with_04():
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
     guide = (ROOT / "docs" / "USER_GUIDE.md").read_text(encoding="utf-8")
     changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
@@ -12,12 +12,15 @@ def test_public_docs_and_runtime_versions_are_aligned_with_036():
     content = (ROOT / "extension" / "content.js").read_text(encoding="utf-8")
     sidepanel = (ROOT / "extension" / "sidepanel.html").read_text(encoding="utf-8")
 
-    assert '"version": "0.3.6"' in manifest
-    assert 'const CONTENT_VERSION = "0.3.6"' in content
-    assert "AI WORKFLOW BRIDGE · 0.3.6" in sidepanel
-    assert "Public Preview 0.3.6" in readme
-    assert "AI Workflow Bridge 0.3.6" in guide
-    assert "## [0.3.6] - 2026-11-23" in changelog
+    import json
+    assert json.loads(manifest)["version"] == "0.4"
+    assert 'const CONTENT_VERSION = "0.4"' in content
+    assert "AI WORKFLOW BRIDGE · 0.4" in sidepanel
+    assert "Public Preview 0.4" in readme
+    assert "AI Workflow Bridge 0.4" in guide
+    assert "## [0.4] - 2026-11-23" in changelog
+    assert "Public Preview 0.3.6" not in readme
+    assert "Isolated Development" in changelog and "0.3.6" in changelog
     assert "## [0.3.5] - 2026-11-15" in changelog
     assert "## [0.3.4] - 2026-10-27" in changelog
     assert "RECOVERY_REQUIRED" in readme
@@ -113,7 +116,7 @@ def test_release_docs_preserve_git_aware_checkpoint_safety_boundary():
         ]
     ).lower()
 
-    assert "## [unreleased]" in combined
+    assert "## [0.4] - 2026-11-23" in combined
     assert "git-aware" in combined
     assert "checkpoint_id" in combined
     assert "head" in combined
@@ -122,7 +125,7 @@ def test_release_docs_preserve_git_aware_checkpoint_safety_boundary():
     assert "never rewrites" in combined
     assert ".git" in combined
 
-    assert "Public Preview 0.3.6" in readme
+    assert "Public Preview 0.4" in readme
 
 
     guide_lower = guide.lower()
@@ -168,3 +171,28 @@ def test_unreleased_policy_profile_docs_preserve_security_boundaries():
         "stale", "llm", "execution isolation", "v0.4", ".ai-workflow/policy.json",
     ]:
         assert phrase in combined
+
+
+def test_v04_release_security_and_roadmap_wording_is_precise():
+    readme = (ROOT / "README.md").read_text(encoding="utf-8").lower()
+    guide = (ROOT / "docs" / "USER_GUIDE.md").read_text(encoding="utf-8").lower()
+    security = (ROOT / "docs" / "SECURITY_MODEL.md").read_text(encoding="utf-8").lower()
+    changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8").lower()
+    roadmap = (ROOT / "docs" / "ROADMAP.md").read_text(encoding="utf-8").lower()
+    combined = "\n".join([readme, guide, security, changelog, roadmap])
+    for phrase in [
+        "policy decides whether a command may execute",
+        "network=none",
+        "local images only",
+        "docker daemon remains trusted",
+        "not a perfect hostile-code or multi-tenant boundary",
+        "host credentials and environment are not forwarded",
+        "docker.sock",
+        "fsynced before docker launch",
+        "full 64-character",
+        "same-name replacement",
+        "no command is automatically replayed",
+    ]:
+        assert phrase in combined
+    assert "## 0.4 — execution isolation (implemented in public preview 0.4)" in roadmap
+    assert "## 0.4.x — structured capabilities" in roadmap
