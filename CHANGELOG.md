@@ -4,13 +4,19 @@ All notable public changes will be documented here. This project follows Semanti
 
 ## [Unreleased]
 
-### Security policy profiles
+## [0.3.6] - 2026-11-23
 
-- Added native-owned, per-project Strict, Balanced, and Isolated Development policy profiles with exact revision-bound human changes.
-- Balanced preserves the existing guarded behavior; Strict adds stronger remote, network, and outside-workspace restrictions.
-- Isolated Development only relaxes narrowly proven workspace-local setup actions and does not provide OS, container, VM, process, or network isolation.
-- Immutable destructive and credential-path blocks remain blocked for every profile. LLM assessments can escalate risk but cannot select, lower, or bypass policy.
-- Mission Control binds profile changes to the exact displayed policy revision; stale actions fail closed and profile changes never resume or replay work.
+### Added
+
+- Added per-project **Strict**, **Balanced**, and **Isolated Development** security policy profiles, with canonical native-owned state at `<workspace>/.ai-workflow/POLICY.json`.
+- Kept **Balanced** as the backward-compatible default for legacy projects. **Strict** adds stronger restrictions for remote, network, outside-workspace, and external-state actions.
+- Added explicit human-only profile changes from Mission Control, bound to the displayed policy revision with compare-and-set updates. Stale actions fail closed. Profile changes are restricted during command execution, recovery, pending approvals, and active workflow windows, and are compatible with restart/recovery without replaying work.
+- Centralized profile-aware execution policy. Isolated Development reduces friction only for narrowly proven workspace-local setup operations. Immutable destructive and credential-path blocks apply across all profiles; LLM risk can only escalate deterministic policy.
+- Added Mission Control profile controls and warnings. Isolated Development does not provide OS sandboxing, process isolation, container isolation, network isolation, or VM isolation. Actual execution isolation remains planned for v0.4.
+
+### Security
+
+- Before v0.3.6 publication, adversarial pre-push review found and fixed a compound-shell approval bypass in the initial Isolated Development implementation. For example, `touch note; curl https://example.com` could have combined a local setup action with a network command. Compound shell/control/redirection/substitution syntax is now rejected before profile lowering, with regression coverage. The issue was fixed before publication; no vulnerable public release was made.
 
 ## [0.3.5] - 2026-11-15
 

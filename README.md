@@ -8,7 +8,7 @@
 
 AI Workflow Bridge lets a supported web LLM plan work, emit a structured workflow contract, receive terminal evidence, and continue a project — while a deterministic local runner enforces roadmap state, approvals, rate limits, account-safety rules, and command policy.
 
-> **Public Preview 0.3.5:** this is pre-1.0 developer tooling. It is intentionally conservative, but it is **not an OS sandbox**. Read [SECURITY.md](SECURITY.md) before using it on valuable or sensitive systems.
+> **Public Preview 0.3.6:** this is pre-1.0 developer tooling. It is intentionally conservative, but it is **not an OS sandbox**. Isolated Development is a command-policy profile; it provides no OS, process, container, network, or VM isolation. Actual execution isolation remains planned for v0.4. Read [SECURITY.md](SECURITY.md) before using it on valuable or sensitive systems.
 
 ## Why this exists
 
@@ -56,7 +56,8 @@ Same web LLM conversation
 - Multi-web-LLM provider registry with explicit support levels.
 - Per-provider optional Chrome site permissions.
 - Local command classification: low-risk / approval / blocked.
-- Per-project Strict, Balanced, and Isolated Development policy profiles; profile changes are explicit, revision-bound human actions. Isolated Development is not an execution sandbox.
+- Per-project Strict, Balanced, and Isolated Development policy profiles stored in native-owned `<workspace>/.ai-workflow/POLICY.json`. Legacy projects default to Balanced. Profile changes require explicit human action bound to the displayed revision; stale actions fail closed and lifecycle restrictions prevent changes during unsafe workflow states.
+- Isolated Development only lowers friction for narrowly proven workspace-local setup operations. Compound shell/control/redirection/substitution syntax is rejected before profile lowering. Immutable destructive and credential-path blocks remain active under every profile; LLM risk can only escalate deterministic policy. This profile does not provide OS sandboxing, process isolation, container isolation, network isolation, or VM isolation; actual execution isolation remains planned for v0.4.
 - Sensitive credential-path guards and output secret redaction.
 - Rate limits, autonomy budgets, circuit-style provider safety pauses.
 - No automatic provider fallback.
