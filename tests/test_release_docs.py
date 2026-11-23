@@ -4,7 +4,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_public_docs_and_runtime_versions_are_aligned_with_035():
+def test_public_docs_and_runtime_versions_are_aligned_with_036():
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
     guide = (ROOT / "docs" / "USER_GUIDE.md").read_text(encoding="utf-8")
     changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
@@ -12,11 +12,12 @@ def test_public_docs_and_runtime_versions_are_aligned_with_035():
     content = (ROOT / "extension" / "content.js").read_text(encoding="utf-8")
     sidepanel = (ROOT / "extension" / "sidepanel.html").read_text(encoding="utf-8")
 
-    assert '"version": "0.3.5"' in manifest
-    assert 'const CONTENT_VERSION = "0.3.5"' in content
-    assert "AI WORKFLOW BRIDGE · 0.3.5" in sidepanel
-    assert "Public Preview 0.3.5" in readme
-    assert "AI Workflow Bridge 0.3.5" in guide
+    assert '"version": "0.3.6"' in manifest
+    assert 'const CONTENT_VERSION = "0.3.6"' in content
+    assert "AI WORKFLOW BRIDGE · 0.3.6" in sidepanel
+    assert "Public Preview 0.3.6" in readme
+    assert "AI Workflow Bridge 0.3.6" in guide
+    assert "## [0.3.6] - 2026-11-23" in changelog
     assert "## [0.3.5] - 2026-11-15" in changelog
     assert "## [0.3.4] - 2026-10-27" in changelog
     assert "RECOVERY_REQUIRED" in readme
@@ -121,7 +122,7 @@ def test_release_docs_preserve_git_aware_checkpoint_safety_boundary():
     assert "never rewrites" in combined
     assert ".git" in combined
 
-    assert "Public Preview 0.3.5" in readme
+    assert "Public Preview 0.3.6" in readme
 
 
     guide_lower = guide.lower()

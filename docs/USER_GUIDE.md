@@ -1,4 +1,4 @@
-# AI Workflow Bridge 0.3.5 — Complete User Guide
+# AI Workflow Bridge 0.3.6 — Complete User Guide
 
 AI Workflow Bridge connects a web LLM conversation to a guarded local runner. The LLM plans and emits a machine-readable workflow contract; the native host executes only approved/local-safe commands, returns stdout/stderr to the same conversation, and stops whenever a human decision or provider safety condition appears.
 
@@ -96,7 +96,7 @@ The Bridge never signs in for you and never asks for your password or cookies.
 
 # 2. Site permissions
 
-Version 0.3.5 does **not** request access to every LLM website at install time.
+Version 0.3.6 does **not** request access to every LLM website at install time.
 
 Choose your Web LLM in **AI Engine + Safety**, then click:
 
@@ -707,13 +707,13 @@ The LLM must not assume `~/Downloads`.
 
 ## Security policy profiles
 
-Mission Control shows the current per-project profile and lets you explicitly apply a new one only while the workflow is paused or otherwise idle. The native-host-owned record is `<workspace>/.ai-workflow/POLICY.json`; older workspaces without that file use **Balanced** safely.
+Mission Control shows the current per-project profile and lets you explicitly apply a new one only while the workflow is paused or otherwise idle. The canonical native-host-owned record is `<workspace>/.ai-workflow/POLICY.json`; older workspaces without that file retain the backward-compatible **Balanced** behavior.
 
 - **Strict** adds maximum supervision for remote, network, outside-workspace, and external-state actions.
 - **Balanced** is the recommended default and preserves the normal guarded development behavior.
-- **Isolated Development** reduces friction only for narrowly proven workspace-local setup actions. It does **not** create an OS, container, process, VM, or network sandbox.
+- **Isolated Development** reduces friction only for narrowly proven workspace-local setup actions. It is not actual isolation: it provides no OS sandboxing, process isolation, container isolation, network isolation, or VM isolation. Actual execution isolation remains planned for v0.4.
 
-Applying a profile is revision-bound to the policy state displayed in Mission Control. If it changes elsewhere, the old action fails rather than changing a replacement policy. LLMs cannot choose profiles, and profile changes never resume execution, approve a command, accept a checkpoint, or accept a stage review.
+Applying a profile is a revision-bound compare-and-set against the policy state displayed in Mission Control. If it changes elsewhere, the stale action fails closed. LLMs cannot choose profiles. Profile changes are blocked during command execution, recovery, pending approvals, or other active workflow windows; they never resume execution, approve a command, accept a checkpoint, or accept a stage review. Immutable destructive and credential-path blocks remain active under every profile. LLM risk can only escalate the deterministic decision. Compound shell/control/redirection/substitution syntax is rejected before Isolated Development can lower a decision.
 
 Typical auto-run candidates:
 - `pwd`
