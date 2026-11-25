@@ -225,11 +225,39 @@ class MessageMixin:
             self.config=save_config(message.get("config") or {})
             if self.lifecycle=="setup": self.active_provider=str(self.config.get("provider_id") or self.active_provider); self.budget.set_provider(self.active_provider)
             self.emit_event({"kind":"info","badge":"SAVED","text":"Local project, provider, and safety configuration updated."}); self.emit({"kind":"state","state":self.state()})
-        elif msg_type in {"build_start_prompt","build_controller_prompt","change_course","finish_project"}:
+        elif msg_type == "build_start_prompt":
+            # Planning is an explicit user action, not a resume of old work.
+            with self.lock:
+                if self.provider_guard:
+                    self.emit_event({"kind": "error", "text": "Provider safety guard is active. Resolve the warning and explicitly reset the budget before planning."})
+                    return
+                if (
+                    self.lifecycle not in {"setup", "idle", "paused"}
+                    or self.pending
+                    or getattr(self, "command_execution_active", False)
+                    or getattr(self, "pending_send_timer", None) is not None
+                ):
+                    self.emit_event({"kind": "error", "text": "Planning requires an idle or paused workflow without outstanding approvals, commands or pending sends."})
+                    return
+                if not str(self.config.get("project_goal") or "").strip():
+                    self.emit_event({"kind": "error", "text": "Project goal/master brief is empty."})
+                    return
+                provider = str(message.get("provider") or self.config.get("provider_id") or self.active_provider)
+                if self.config.get("provider_mode", "manual") != "auto" and provider != str(self.config.get("provider_id") or self.active_provider):
+                    self.emit_event({"kind": "error", "text": "Planning provider does not match the saved manual selection."})
+                    return
+                self.active_provider = provider
+                self.budget.set_provider(provider)
+                self.no_contract_recoveries = 0
+                self.paused = False
+                self.lifecycle = "planning"
+                self.status = "planning"
+                self.current_step = f"Planning project with {self.provider_name(provider)}"
+                self.emit_event({"kind": "step", "badge": "PLAN!", "status": "planning", "text": self.current_step})
+                self._send_result_to_chatgpt(self.start_prompt())
+                return
+        elif msg_type in {"build_controller_prompt","change_course","finish_project"}:
             provider=str(message.get("provider") or self.config.get("provider_id") or self.active_provider); self.active_provider=provider; self.budget.set_provider(provider); self.no_contract_recoveries=0
-            if msg_type=="build_start_prompt":
-                if not str(self.config.get("project_goal") or "").strip(): self.emit_event({"kind":"error","text":"Project goal/master brief is empty."}); return
-                self.lifecycle="planning"; self.status="planning"; self.current_step=f"Planning project with {self.provider_name(provider)}"; self.emit_event({"kind":"step","badge":"PLAN!","status":"planning","text":self.current_step}); self._send_result_to_chatgpt(self.start_prompt()); return
             if msg_type=="build_controller_prompt":
                 if self.lifecycle in {"ready_to_arm","setup","idle","protocol_error","protocol_blocked","paused"}:
                     if self.lifecycle in {"ready_to_arm","setup"}: self.budget.reset(provider)
