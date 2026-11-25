@@ -19,7 +19,9 @@ async function command(action, extra = {}) {
 
 function selectedProvider() { return utils.getProvider($("providerId").value) || providers[0]; }
 function populateProviders() { $("providerId").replaceChildren(); for (const p of providers) { const option = document.createElement("option"); option.value = p.id; option.textContent = `${p.name} — ${p.status.toUpperCase()}`; $("providerId").append(option); } }
-function updateProviderCard(provider = selectedProvider()) {
+function updateProviderCard() {
+  // DOM listeners pass an Event, not a provider descriptor.
+  const provider = selectedProvider();
   $("providerName").textContent = provider.name; $("providerStatus").textContent = provider.status.toUpperCase();
   const notes = { stable: "Stable adapter. Still stops on provider security/rate-limit signals.", beta: "Beta web adapter: selectors can change when the provider updates its UI.", experimental: "Experimental adapter: verify the first few turns manually before long runs." };
   $("providerSafetyNote").textContent = `${notes[provider.status] || notes.beta} The Bridge never automates login or exports your session.`;
