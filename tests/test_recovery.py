@@ -656,3 +656,62 @@ def test_runtime_snapshot_persists_budget_state():
     assert snapshot["version"] == 2
     assert snapshot["budget"]["provider_id"] == "chatgpt"
     assert len(snapshot["budget"]["turn_timestamps"]) == 1
+
+
+def test_reset_budget_after_discard_never_resumes_or_replays():
+    bridge, emitted, sent = _make_recovery_bridge()
+    bridge.handle({"type": "recovery_discard"})
+    bridge.budget.record_send()
+    previous_step = bridge.current_step
+
+    bridge.handle({"type": "reset_session"})
+
+    assert bridge.lifecycle == "paused"
+    assert bridge.status == "paused"
+    assert bridge.paused is True
+    assert bridge.current_step == previous_step
+    assert bridge.pending == {}
+    assert bridge.budget.public(bridge.config)["session_turns"] == 0
+    assert sent == []
+    assert not any(event.get("kind") == "send_to_llm" for event in emitted)
+
+
+def test_reset_budget_does_not_bypass_unreviewed_recovery():
+    bridge, emitted, sent = _make_recovery_bridge()
+    bridge.handle({"type": "reset_session"})
+
+    assert bridge.lifecycle == "recovery_required"
+    assert bridge.paused is True
+    assert bridge.recovery_context is not None
+    assert bridge.pending
+    assert sent == []
+
+
+def test_reset_budget_clears_acknowledged_guard_without_resuming():
+    bridge, emitted, sent = _make_recovery_bridge()
+    bridge.provider_guard = True
+    bridge.budget.block("rate limit")
+    bridge.handle({"type": "recovery_discard"})
+    bridge.handle({"type": "reset_session"})
+
+    assert bridge.provider_guard is False
+    assert bridge.lifecycle == "paused"
+    assert bridge.status == "paused"
+    assert bridge.paused is True
+    assert sent == []
+
+
+def test_reset_budget_does_not_change_running_status():
+    bridge, emitted, sent = _make_recovery_bridge()
+    bridge.lifecycle = "running"
+    bridge.status = "waiting_llm"
+    bridge.paused = False
+    bridge.recovery_context = None
+    bridge.pending.clear()
+
+    bridge.handle({"type": "reset_session"})
+
+    assert bridge.lifecycle == "running"
+    assert bridge.status == "waiting_llm"
+    assert bridge.paused is False
+    assert sent == []
