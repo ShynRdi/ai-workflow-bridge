@@ -14,7 +14,9 @@ function addLog(label, text) {
 }
 
 async function command(action, extra = {}) {
-  return chrome.runtime.sendMessage({ type: "BRIDGE_COMMAND", payload: { action, ...extra } });
+  const result = await chrome.runtime.sendMessage({ type: "BRIDGE_COMMAND", payload: { action, ...extra } });
+  if (!result?.ok) throw new Error(result?.error || "Bridge did not confirm the request.");
+  return result;
 }
 
 function selectedProvider() { return utils.getProvider($("providerId").value) || providers[0]; }
@@ -43,7 +45,12 @@ async function effectiveProvider() { if (!$("providerAuto").checked) return sele
 async function grantProviderAccess({ quiet = false } = {}) { const provider = await effectiveProvider(); const contains = await chrome.permissions.contains({ origins: provider.origins }); if (contains) { if (!quiet) addLog("SAFE", `${provider.name} site access is already granted.`); return provider; } const granted = await chrome.permissions.request({ origins: provider.origins }); if (!granted) throw new Error(`Site access for ${provider.name} was not granted.`); addLog("UNLOCK", `Granted site access only for ${provider.name}.`); return provider; }
 function numberValue(id, fallback) { const value = Number($(id).value); return Number.isFinite(value) ? value : fallback; }
 function gatherConfig() { return { project_name: $("projectName").value.trim(), project_goal: $("projectGoal").value.trim(), workspace_root: $("workspaceRoot").value.trim(), provider_mode: $("providerAuto").checked ? "auto" : "manual", provider_id: $("providerId").value, model_label: $("modelLabel").value.trim(), auto_run_low_risk: $("autoRunLowRisk").checked, min_turn_interval_seconds: numberValue("minTurnInterval", 8), max_turns_per_hour: numberValue("maxTurnsHour", 20), max_turns_per_session: numberValue("maxTurnsSession", 25), max_runtime_minutes: numberValue("maxRuntimeMinutes", 90), bot_token: $("botToken").value.trim(), chat_id: $("chatId").value.trim() }; }
-async function saveProject({ log = true } = {}) { const config = gatherConfig(); await command("save_config", { config }); if (log) addLog("SAVED", "Project, AI Engine, and safety limits saved locally."); }
+async function saveProject({ log = true } = {}) {
+  const config = gatherConfig();
+  const result = await command("save_config", { config });
+  if (!result.nativeAcknowledged) throw new Error("Native configuration acknowledgment missing. Refresh status before continuing.");
+  // Native SAVED event is authoritative; do not duplicate it locally.
+}
 function diagnosticCounts(checks = []) {
   return checks.reduce(
     (counts, item) => {
@@ -598,6 +605,12 @@ function setLifecycleButtons(state) {
     if (node) node.disabled = recoveryRequired;
   }
 
+  const providerBlocked = state.status === "provider_guard" || Boolean(state.budget?.cooldown_until);
+  if (providerBlocked) {
+    for (const id of ["planProject", "armWorkflow", "resumeWorkflow", "changeCourse", "finishProject"]) {
+      $(id).disabled = true;
+    }
+  }
   if ($("prepareRecovery")) {
     $("prepareRecovery").disabled = !recoveryRequired;
   }
@@ -780,7 +793,7 @@ function handleEvent(event) { if (!event) return; if (event.kind === "host_statu
         100,
       );
     }
-  } else if (event.kind === "error") { $("runStatus").textContent = "PAUSED"; $("runStatusDetail").textContent = event.text || "Workflow error"; addLog("CRASH", event.text || "Unknown error"); } else if (event.kind === "info") addLog(event.badge || "INFO", event.text || "Update"); }
+  } else if (event.kind === "error") { addLog(event.badge || "ERROR", event.text || "Unknown error"); command("get_state").catch(() => {}); } else if (event.kind === "info") addLog(event.badge || "INFO", event.text || "Update"); }
 chrome.runtime.onMessage.addListener((message) => { if (message?.type === "BRIDGE_EVENT") handleEvent(message.payload); });
 populateProviders(); $("providerId").value = "chatgpt"; updateProviderCard(); $("providerId").addEventListener("change", updateProviderCard); $("providerAuto").addEventListener("change", updateProviderCard); $("modelLabel").addEventListener("input", updateProviderCard); $("grantProvider").addEventListener("click", () => grantProviderAccess().catch((e) => addLog("NOPE", e.message))); $("saveConfig").addEventListener("click", () => saveProject().then(() => setTimeout(() => command("get_state"), 200)).catch((e) => addLog("CRASH", e.message)));
 $("runDiagnostics").addEventListener("click", () => runSystemDiagnostics());
@@ -975,7 +988,23 @@ $("rollbackCheckpoint").addEventListener(
   },
 );
 
-$("planProject").addEventListener("click", async () => { try { if (!$("projectGoal").value.trim()) throw new Error("Add a project goal/master brief before planning."); const p = await grantProviderAccess({ quiet: true }); await saveProject({ log: false }); await command("plan_project"); addLog("PLAN!", `Sent the protected project-start prompt to ${p.name}.`); } catch (e) { addLog("CRASH", e.message); } });
+$("planProject").addEventListener("click", async () => {
+  const button = $("planProject");
+  button.disabled = true;
+  try {
+    if (lastState.status === "provider_guard" || lastState.budget?.cooldown_until) throw new Error("Provider safety guard is active. Planning blocked.");
+    if (!$("projectGoal").value.trim()) throw new Error("Add a project goal/master brief before planning.");
+    await grantProviderAccess({ quiet: true });
+    await saveProject({ log: false });
+    const result = await command("plan_project");
+    if (!result.nativeAcknowledged) throw new Error("Native planning acknowledgment missing. Refresh status; do not retry automatically.");
+    // PLAN! and submission confirmation come only from the native host.
+  } catch (e) {
+    addLog("BLOCKED", String(e?.message || e));
+  } finally {
+    setLifecycleButtons(lastState);
+  }
+});
 $("armWorkflow").addEventListener("click", async () => { try { const p = await grantProviderAccess({ quiet: true }); await saveProject({ log: false }); await command("arm"); addLog("ZAP!", `Arming the current ${p.name} thread.`); } catch (e) { addLog("CRASH", e.message); } });
 $("pauseWorkflow").addEventListener("click", () => command("pause")); $("resumeWorkflow").addEventListener("click", () => command("resume")); $("refreshState").addEventListener("click", () => command("get_state")); $("resetSession").addEventListener("click", () => command("reset_session"));
 $("changeCourse").addEventListener("click", async () => { try { const text = $("changeRequest").value.trim(); if (!text) throw new Error("Describe the course change first."); await grantProviderAccess({ quiet: true }); await command("change_course", { change_request: text }); addLog("PIVOT?", "Course-change review requested. No project commands will run until you approve the impact."); } catch (e) { addLog("CRASH", e.message); } });
