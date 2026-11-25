@@ -737,7 +737,7 @@ function startResponseWatchdog(providerName = "LLM") {
   clearResponseWatchdog();
   responseWatchdog = setTimeout(() => {
     responseWatchdog = null;
-    try { sendNative({ type: "chat_response_timeout", text: `No completed ${providerName} response has been detected. If it is still generating, keep waiting; otherwise refresh the provider tab.` }); } catch {}
+    try { sendNative({ type: "chat_response_timeout", text: `No completed ${providerName} response has been detected. Workflow stopped for manual review; do not retry or refresh automatically.` }); } catch {}
   }, 120000);
 }
 
@@ -1399,6 +1399,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         ].join(" ");
       }
 
+      clearResponseWatchdog();
       // A safety signal from the exact workflow tab is always
       // fail-safe, even if that tab changed conversation.
       sendNative({
@@ -1582,7 +1583,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         await ensureContentScript(found.tab.id);
         const typeMap = { plan_project: "build_start_prompt", arm: "build_controller_prompt", change_course: "change_course", finish_project: "finish_project" };
         sendNative({ type: typeMap[command.action], tab_id: found.tab.id, provider: found.provider.id, change_request: command.change_request || "" });
-      } else if (command.action === "pause") sendNative({ type: "pause" });
+      } else if (command.action === "pause") { clearResponseWatchdog(); sendNative({ type: "pause" }); }
       else if (command.action === "resume") sendNative({ type: "resume" });
       else if (command.action === "reset_session") sendNative({ type: "reset_session" });
       else if (command.action === "approval") sendNative({ type: "approval_decision", approval_id: command.approval_id, decision: command.decision });
