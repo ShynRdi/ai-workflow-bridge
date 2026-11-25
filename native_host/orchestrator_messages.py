@@ -288,7 +288,24 @@ class MessageMixin:
                 })
                 self.emit({"kind": "state", "state": self.state()})
         elif msg_type=="provider_safety_signal":
-            payload=message.get("payload") or {}; provider=str(payload.get("provider") or self.active_provider); self.active_provider=provider; reason=f"{payload.get('kind') or 'provider safety warning'}: {payload.get('text') or 'provider asked automation to stop'}"; self.provider_guard=True; self.paused=True; self.lifecycle="paused"; self.status="provider_guard"; self.budget.block(reason); self.current_step="Provider account-safety guard triggered"; self.emit_event({"kind":"step","badge":"SHIELD!","status":"paused","text":f"{self.provider_name(provider)} showed a rate-limit/auth/security warning. Automation stopped immediately; no automatic retry or provider fallback will occur."}); self.telegram.send_report(f"🛡 AI Workflow Bridge paused\nProvider: {self.provider_name(provider)}\nReason: {reason[:700]}\nNo automatic retry/fallback will run.")
+            with self.lock:
+                payload = message.get("payload") or {}
+                provider = str(payload.get("provider") or self.active_provider)
+                self.active_provider = provider
+                reason = f"{payload.get('kind') or 'provider safety warning'}: {payload.get('text') or 'provider asked automation to stop'}"
+                self.provider_guard = True
+                self.paused = True
+                self.lifecycle = "paused"
+                self.status = "provider_guard"
+                timer = getattr(self, "pending_send_timer", None)
+                if timer is not None:
+                    timer.cancel()
+                    self.pending_send_timer = None
+                self.budget.block(reason)
+                self.current_step = "Provider account-safety guard triggered"
+                self.emit_event({"kind": "step", "badge": "SHIELD!", "status": "paused", "text": f"{self.provider_name(provider)} showed a rate-limit/auth/security warning. Automation stopped immediately; no automatic retry or provider fallback will occur."})
+                self.emit({"kind": "state", "state": self.state()})
+            self.telegram.send_report(f"🛡 AI Workflow Bridge paused\nProvider: {self.provider_name(provider)}\nReason: {reason[:700]}\nNo automatic retry/fallback will run.")
         elif msg_type=="assistant_response":
             payload=message.get("payload") or {}; provider=str(payload.get("provider") or self.active_provider); self.active_provider=provider; self.emit_event({"kind":"info","badge":"POP!","text":f"Completed {self.provider_name(provider)} response captured; inspecting workflow protocol."}); threading.Thread(target=self.process_assistant_response,args=(payload,),daemon=True).start()
         elif msg_type=="approval_decision": self.resolve_approval(str(message.get("approval_id") or ""),str(message.get("decision") or ""))
@@ -296,6 +313,21 @@ class MessageMixin:
             request_id=str(message.get("request_id") or ""); waiter=self.download_waiters.get(request_id)
             if waiter: waiter["response"]=message; waiter["event"].set()
         elif msg_type=="chat_send_ack":
+            if self.paused or self.provider_guard:
+                return
             if message.get("ok") and message.get("submitted",True): self.status="waiting_llm"; self.current_step=f"Prompt submitted; waiting for {self.provider_name(self.active_provider)}"; self.emit_event({"kind":"step","badge":"ARMED","status":self.lifecycle,"text":self.current_step})
             else: self.status="error"; self.current_step="LLM prompt submission failed"; self.emit_event({"kind":"error","text":f"Could not send prompt/result to {self.provider_name(self.active_provider)}: {message.get('error') or 'submission was not confirmed'}"})
-        elif msg_type=="chat_response_timeout": self.emit_event({"kind":"info","badge":"STUCK?","text":str(message.get("text") or "No completed LLM response has been detected yet.")})
+        elif msg_type=="chat_response_timeout":
+            with self.lock:
+                if self.paused or self.status not in {"waiting_llm", "waiting_chatgpt"}:
+                    return
+                self.paused = True
+                self.lifecycle = "paused"
+                self.status = "paused"
+                timer = getattr(self, "pending_send_timer", None)
+                if timer is not None:
+                    timer.cancel()
+                    self.pending_send_timer = None
+                self.current_step = "Response timeout; manual review required"
+                self.emit_event({"kind": "step", "badge": "STUCK?", "status": "paused", "text": "No completed LLM response detected. Workflow paused for manual review. No automatic retry."})
+                self.emit({"kind": "state", "state": self.state()})
