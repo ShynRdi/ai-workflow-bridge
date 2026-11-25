@@ -11,6 +11,17 @@ class MessageMixin:
     def handle(self, message: dict[str, Any]) -> None:
         msg_type = message.get("type")
 
+        def acknowledge(ok: bool, reason: str = "") -> None:
+            request_id = message.get("action_request_id")
+            if request_id:
+                self.emit({"kind": "action_ack", "action_request_id": request_id,
+                           "action": msg_type, "ok": ok, "reason": reason})
+
+        def reject_planning(reason: str) -> None:
+            self.emit_event({"kind": "info", "badge": "BLOCKED", "text": reason})
+            acknowledge(False, reason)
+            self.emit({"kind": "state", "state": self.state()})
+
         recovery_safe_messages = {
             "diagnostics",
             "ping",
@@ -39,6 +50,7 @@ class MessageMixin:
                 "kind": "state",
                 "state": self.state(),
             })
+            acknowledge(False, "Explicit recovery review is required before this action.")
             return
 
         if msg_type == "checkpoint_accept":
@@ -225,11 +237,12 @@ class MessageMixin:
             self.config=save_config(message.get("config") or {})
             if self.lifecycle=="setup": self.active_provider=str(self.config.get("provider_id") or self.active_provider); self.budget.set_provider(self.active_provider)
             self.emit_event({"kind":"info","badge":"SAVED","text":"Local project, provider, and safety configuration updated."}); self.emit({"kind":"state","state":self.state()})
+            acknowledge(True)
         elif msg_type == "build_start_prompt":
             # Planning is an explicit user action, not a resume of old work.
             with self.lock:
                 if self.provider_guard:
-                    self.emit_event({"kind": "error", "text": "Provider safety guard is active. Resolve the warning and explicitly reset the budget before planning."})
+                    reject_planning("Provider safety guard is active. Resolve the warning and explicitly reset the budget before planning.")
                     return
                 if (
                     self.lifecycle not in {"setup", "idle", "paused"}
@@ -237,14 +250,14 @@ class MessageMixin:
                     or getattr(self, "command_execution_active", False)
                     or getattr(self, "pending_send_timer", None) is not None
                 ):
-                    self.emit_event({"kind": "error", "text": "Planning requires an idle or paused workflow without outstanding approvals, commands or pending sends."})
+                    reject_planning("Planning requires an idle or paused workflow without outstanding approvals, commands or pending sends.")
                     return
                 if not str(self.config.get("project_goal") or "").strip():
-                    self.emit_event({"kind": "error", "text": "Project goal/master brief is empty."})
+                    reject_planning("Project goal/master brief is empty.")
                     return
                 provider = str(message.get("provider") or self.config.get("provider_id") or self.active_provider)
                 if self.config.get("provider_mode", "manual") != "auto" and provider != str(self.config.get("provider_id") or self.active_provider):
-                    self.emit_event({"kind": "error", "text": "Planning provider does not match the saved manual selection."})
+                    reject_planning("Planning provider does not match the saved manual selection.")
                     return
                 self.active_provider = provider
                 self.budget.set_provider(provider)
@@ -254,6 +267,7 @@ class MessageMixin:
                 self.status = "planning"
                 self.current_step = f"Planning project with {self.provider_name(provider)}"
                 self.emit_event({"kind": "step", "badge": "PLAN!", "status": "planning", "text": self.current_step})
+                acknowledge(True)
                 self._send_result_to_chatgpt(self.start_prompt())
                 return
         elif msg_type in {"build_controller_prompt","change_course","finish_project"}:
