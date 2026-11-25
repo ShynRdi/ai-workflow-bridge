@@ -857,3 +857,42 @@ assert.equal(get("activeProvider").textContent, "Z.AI / GLM");
 assert.equal(get("providerDetail").textContent, "Runtime provider · selected: Z.ai / GLM");
 """
     subprocess.run(["node", "-e", script, str(EXT)], check=True)
+
+
+def test_visible_glm_security_verification_stops_content_script():
+    script = r"""
+const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const vm = require("node:vm");
+const source = fs.readFileSync(process.argv[1], "utf8");
+const start = source.indexOf("  function safetySignal()");
+const end = source.indexOf("  chrome.runtime.onMessage.addListener", start);
+assert.ok(start >= 0 && end > start);
+const document = {body: {innerText: ""}};
+const provider = {id: "glm", name: "Z.ai / GLM"};
+const signals = [];
+const nodes = [];
+const context = vm.createContext({
+  document, provider, location: {href: "https://chat.z.ai/"},
+  queryAll: () => nodes, visible: n => n.visible,
+  getComputedStyle: n => n.style || {},
+  chrome: {runtime: {sendMessage: msg => {signals.push(msg); return Promise.resolve({ok:true});}}}
+});
+vm.runInContext('let lastSafetySignal = "";' + source.slice(start, end), context);
+const inspect = () => vm.runInContext("inspectSafety()", context);
+assert.equal(inspect(), null);
+document.body.innerText = "Please complete security verification\nPlease drag the slider to complete the puzzle";
+assert.equal(inspect().kind, "auth_challenge");
+assert.equal(signals.length, 1);
+assert.throws(() => vm.runInContext("requireNoSafetyChallenge()", context), /Automation stopped/);
+assert.equal(signals.length, 1);
+document.body.innerText = "";
+nodes.push({visible: false, innerText: "Security verification", style: {display: "none"}});
+assert.equal(inspect(), null);
+nodes.push({visible: true, innerText: "Security verification"});
+assert.equal(inspect().kind, "auth_challenge");
+assert.equal(signals.length, 2);
+assert.ok(source.includes("if (inspectSafety()) { candidate = null;"));
+assert.ok(source.includes("requireNoSafetyChallenge(); const sendButton"));
+"""
+    subprocess.run(["node", "-e", script, str(EXT / "content.js")], check=True)
