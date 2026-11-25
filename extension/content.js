@@ -138,22 +138,51 @@
   function dispatchEnter(composer) { const init = { key: "Enter", code: "Enter", keyCode: 13, which: 13, bubbles: true, cancelable: true }; composer.dispatchEvent(new KeyboardEvent("keydown", init)); composer.dispatchEvent(new KeyboardEvent("keypress", init)); composer.dispatchEvent(new KeyboardEvent("keyup", init)); }
   async function submitComposer() {
     const composer = findComposer(); if (!composer) throw new Error(`${provider.name} composer not found`); const beforeUserCount = getUserTurns().length; const beforeText = composerText(composer).trim(); if (!beforeText) throw new Error(`${provider.name} composer is empty after prompt insertion`);
-    const sendButton = await waitForSendButton(); if (sendButton) sendButton.click(); else { const form = composer.closest("form"); if (form && typeof form.requestSubmit === "function") { try { form.requestSubmit(); } catch { dispatchEnter(composer); } } else dispatchEnter(composer); }
-    const deadline = Date.now() + SUBMIT_CONFIRM_TIMEOUT_MS; while (Date.now() < deadline) { await new Promise((resolve) => setTimeout(resolve, 140)); const userAdvanced = getUserTurns().length > beforeUserCount; const composerCleared = composerText(findComposer()).trim() === ""; if (userAdvanced || isGenerating() || composerCleared) return true; }
+    requireNoSafetyChallenge(); const sendButton = await waitForSendButton(); requireNoSafetyChallenge(); if (sendButton) sendButton.click(); else { const form = composer.closest("form"); if (form && typeof form.requestSubmit === "function") { try { form.requestSubmit(); } catch { dispatchEnter(composer); } } else dispatchEnter(composer); }
+    const deadline = Date.now() + SUBMIT_CONFIRM_TIMEOUT_MS; while (Date.now() < deadline) { await new Promise((resolve) => setTimeout(resolve, 140)); requireNoSafetyChallenge(); const userAdvanced = getUserTurns().length > beforeUserCount; const composerCleared = composerText(findComposer()).trim() === ""; if (userAdvanced || isGenerating() || composerCleared) return true; }
     throw new Error(`Prompt remained unsubmitted on ${provider.name}; composer_chars=${composerText(findComposer()).trim().length}; controls=${JSON.stringify(sendControlSnapshot())}`);
   }
   async function notifyDone(node, text, key, completionReason) { if (!text || (key === lastSentKey && node === lastSentNode)) return; lastCompletedNode = node; lastCompletedKey = key; try { const response = await chrome.runtime.sendMessage({ type: "LLM_RESPONSE_DONE", payload: { provider: provider.id, providerName: provider.name, title: document.title || provider.name, text, url: location.href, responseKey: key, observedAt: new Date().toISOString(), completionReason, protocolDiagnostics: protocolDiagnostics(text) } }); if (response?.ok) { lastSentKey = key; lastSentNode = node; } } catch (error) { console.warn("[AI Workflow Bridge] response forwarding failed", error); } }
   function collectLinks(node) { if (!node) return []; const links = []; const seen = new Set(); node.querySelectorAll('a[href]').forEach((anchor) => { const raw = anchor.getAttribute("href") || ""; const absolute = anchor.href || raw; const label = (anchor.innerText || anchor.textContent || anchor.getAttribute("download") || "download").trim(); const looksDownloadable = anchor.hasAttribute("download") || /download|sandbox|\.zip(?:$|\?)|\.patch(?:$|\?)|\.diff(?:$|\?)|\.txt(?:$|\?)/i.test(`${raw} ${absolute} ${label}`); if (!looksDownloadable || !absolute || seen.has(absolute)) return; seen.add(absolute); links.push({ href: absolute, rawHref: raw, label }); }); return links; }
-  function safetySignal() { const nodes = queryAll(['[role="alert"]', '[role="dialog"]', '[aria-live="assertive"]', '[data-testid*="toast"]', '[class*="toast"]']); const text = nodes.map((n) => (n.innerText || n.textContent || "").trim()).filter(Boolean).join("\n").slice(0, 12000); if (!text) return null; const patterns = [["rate_limit", /rate limit|too many requests|usage limit|message limit|reached (?:your|the) limit|try again later|come back later/i], ["auth_challenge", /session expired|verify you are human|unusual activity|suspicious activity|captcha|account temporarily|security check/i]]; for (const [kind, rx] of patterns) if (rx.test(text)) return { kind, text: text.slice(0, 700) }; return null; }
-  function inspectSafety() { const signal = safetySignal(); if (!signal) return; const key = `${signal.kind}:${signal.text}`; if (key === lastSafetySignal) return; lastSafetySignal = key; chrome.runtime.sendMessage({ type: "LLM_ACCOUNT_SAFETY_SIGNAL", payload: { provider: provider.id, providerName: provider.name, ...signal, url: location.href } }).catch(() => {}); }
+  function safetySignal() {
+    const nodes = queryAll(['[role="alert"]', '[role="dialog"]', '[aria-live="assertive"]', '[data-testid*="toast"]', '[class*="toast"]']);
+    const text = nodes.filter(n => visible(n) && getComputedStyle(n).visibility !== "hidden" && getComputedStyle(n).display !== "none").map(n => (n.innerText || "").trim()).filter(Boolean).join("\n").slice(0, 12000);
+    const patterns = [
+      ["auth_challenge", /session expired|verify you are human|unusual activity|suspicious activity|captcha|account temporarily|security check|security verification|drag the slider to complete the puzzle/i],
+      ["rate_limit", /rate limit|too many requests|usage limit|message limit|reached (?:your|the) limit|try again later|come back later/i],
+    ];
+    for (const [kind, rx] of patterns) if (rx.test(text)) return { kind, text: "Visible provider account-safety warning (" + kind + ")." };
+    // Z.ai may render a verification overlay without accessible dialog roles.
+    // Require both observed phrases; only read visible text, never the puzzle.
+    if (provider.id === "glm") {
+      const page = String(document.body?.innerText || "").replace(/\s+/g, " ");
+      if (/please complete security verification/i.test(page) && /please drag the slider to complete the puzzle/i.test(page)) {
+        return { kind: "auth_challenge", text: "Z.ai security verification overlay detected." };
+      }
+    }
+    return null;
+  }
+  function inspectSafety() {
+    const signal = safetySignal();
+    if (!signal) return null;
+    const key = signal.kind + ":" + signal.text;
+    if (key !== lastSafetySignal) {
+      lastSafetySignal = key;
+      chrome.runtime.sendMessage({ type: "LLM_ACCOUNT_SAFETY_SIGNAL", payload: { provider: provider.id, providerName: provider.name, ...signal, url: location.href } }).catch(() => {});
+    }
+    return signal;
+  }
+  function requireNoSafetyChallenge() {
+    if (inspectSafety()) throw new Error("Provider account-safety warning detected. Automation stopped; no retry.");
+  }
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-    if (message?.type === "BRIDGE_PING") { sendResponse({ ok: true, href: location.href, version: CONTENT_VERSION, provider: provider.id, providerName: provider.name, providerStatus: provider.status || "unknown", assistantCount: getAssistantTurns().length, userCount: getUserTurns().length, composerFound: Boolean(findComposer()), generating: isGenerating(), expectedResponse }); return true; }
-    if (message?.type === "SEND_TO_LLM" || message?.type === "SEND_TO_CHATGPT") { (async () => { try { const outbound = String(message.payload?.text || ""); prepareForOutboundPrompt(outbound); setComposerText(outbound); if (message.payload?.submit === false) return sendResponse({ ok: true, submitted: false, version: CONTENT_VERSION, provider: provider.id }); const submitted = await submitComposer(); sendResponse({ ok: true, submitted: Boolean(submitted), version: CONTENT_VERSION, provider: provider.id, expectedResponse }); } catch (error) { sendResponse({ ok: false, submitted: false, error: String(error?.message || error), version: CONTENT_VERSION, provider: provider.id }); } })(); return true; }
+    if (message?.type === "BRIDGE_PING") { sendResponse({ ok: true, href: location.href, version: CONTENT_VERSION, provider: provider.id, providerName: provider.name, providerStatus: provider.status || "unknown", assistantCount: getAssistantTurns().length, userCount: getUserTurns().length, composerFound: Boolean(findComposer()), generating: isGenerating(), expectedResponse, safety: safetySignal()?.kind || "" }); return true; }
+    if (message?.type === "SEND_TO_LLM" || message?.type === "SEND_TO_CHATGPT") { (async () => { try { requireNoSafetyChallenge(); const outbound = String(message.payload?.text || ""); prepareForOutboundPrompt(outbound); setComposerText(outbound); if (message.payload?.submit === false) return sendResponse({ ok: true, submitted: false, version: CONTENT_VERSION, provider: provider.id }); const submitted = await submitComposer(); sendResponse({ ok: true, submitted: Boolean(submitted), version: CONTENT_VERSION, provider: provider.id, expectedResponse }); } catch (error) { sendResponse({ ok: false, submitted: false, error: String(error?.message || error), version: CONTENT_VERSION, provider: provider.id }); } })(); return true; }
     if (message?.type === "GET_RESPONSE_DOWNLOADS") { const requestedKey = message.payload?.responseKey || ""; const node = requestedKey && requestedKey === lastCompletedKey ? lastCompletedNode : getAssistantTurns().at(-1); sendResponse({ links: collectLinks(node), provider: provider.id }); return true; }
     if (message?.type === "CLICK_DOWNLOAD_LINK") { try { const candidate = message.payload || {}; const node = lastCompletedNode || getAssistantTurns().at(-1); if (!node) throw new Error("No completed assistant response is available"); const target = Array.from(node.querySelectorAll('a[href]')).find((anchor) => { const raw = anchor.getAttribute("href") || ""; const absolute = anchor.href || raw; const label = (anchor.innerText || anchor.textContent || anchor.getAttribute("download") || "download").trim(); return absolute === candidate.href || raw === candidate.rawHref || (candidate.label && label === candidate.label); }); if (!target) throw new Error("Attachment link is no longer present in the response"); target.click(); sendResponse({ ok: true }); } catch (error) { sendResponse({ ok: false, error: String(error?.message || error) }); } return true; }
   });
   function tick() {
-    inspectSafety();
+    if (inspectSafety()) { candidate = null; generationWasObserved = false; return; }
     if (location.pathname !== lastPathname) { lastPathname = location.pathname; resetForNavigation(); return; }
     const turns = getAssistantTurns(); const count = turns.length; const generating = isGenerating();
     if (!initialized) { baselineAssistantCount = count; initialized = true; return; }
