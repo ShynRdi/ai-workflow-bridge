@@ -11,6 +11,17 @@ class MessageMixin:
     def handle(self, message: dict[str, Any]) -> None:
         msg_type = message.get("type")
 
+        def acknowledge(ok: bool, reason: str = "") -> None:
+            request_id = message.get("action_request_id")
+            if request_id:
+                self.emit({"kind": "action_ack", "action_request_id": request_id,
+                           "action": msg_type, "ok": ok, "reason": reason})
+
+        def reject_planning(reason: str) -> None:
+            self.emit_event({"kind": "info", "badge": "BLOCKED", "text": reason})
+            acknowledge(False, reason)
+            self.emit({"kind": "state", "state": self.state()})
+
         recovery_safe_messages = {
             "diagnostics",
             "ping",
@@ -39,6 +50,7 @@ class MessageMixin:
                 "kind": "state",
                 "state": self.state(),
             })
+            acknowledge(False, "Explicit recovery review is required before this action.")
             return
 
         if msg_type == "checkpoint_accept":
@@ -225,11 +237,44 @@ class MessageMixin:
             self.config=save_config(message.get("config") or {})
             if self.lifecycle=="setup": self.active_provider=str(self.config.get("provider_id") or self.active_provider); self.budget.set_provider(self.active_provider)
             self.emit_event({"kind":"info","badge":"SAVED","text":"Local project, provider, and safety configuration updated."}); self.emit({"kind":"state","state":self.state()})
-        elif msg_type in {"build_start_prompt","build_controller_prompt","change_course","finish_project"}:
+            acknowledge(True)
+        elif msg_type == "build_start_prompt":
+            # Planning is an explicit user action, not a resume of old work.
+            with self.lock:
+                if self.provider_guard:
+                    reject_planning("Provider safety guard is active. Resolve the warning and explicitly reset the budget before planning.")
+                    return
+                if (
+                    self.lifecycle not in {"setup", "idle", "paused"}
+                    or self.pending
+                    or getattr(self, "command_execution_active", False)
+                    or getattr(self, "pending_send_timer", None) is not None
+                ):
+                    reject_planning("Planning requires an idle or paused workflow without outstanding approvals, commands or pending sends.")
+                    return
+                if not str(self.config.get("project_goal") or "").strip():
+                    reject_planning("Project goal/master brief is empty.")
+                    return
+                provider = str(message.get("provider") or self.config.get("provider_id") or self.active_provider)
+                if self.config.get("provider_mode", "manual") != "auto" and provider != str(self.config.get("provider_id") or self.active_provider):
+                    reject_planning("Planning provider does not match the saved manual selection.")
+                    return
+                self.active_provider = provider
+                self.budget.set_provider(provider)
+                self.no_contract_recoveries = 0
+                self.paused = False
+                self.lifecycle = "planning"
+                self.status = "planning"
+                self.current_step = f"Planning project with {self.provider_name(provider)}"
+                self.emit_event({"kind": "step", "badge": "PLAN!", "status": "planning", "text": self.current_step})
+                acknowledge(True)
+                self._send_result_to_chatgpt(self.start_prompt())
+                return
+        elif msg_type in {"build_controller_prompt","change_course","finish_project"}:
+            if self.provider_guard:
+                self.emit_event({"kind": "error", "text": "Provider safety guard remains active. Automation is stopped for manual review."})
+                return
             provider=str(message.get("provider") or self.config.get("provider_id") or self.active_provider); self.active_provider=provider; self.budget.set_provider(provider); self.no_contract_recoveries=0
-            if msg_type=="build_start_prompt":
-                if not str(self.config.get("project_goal") or "").strip(): self.emit_event({"kind":"error","text":"Project goal/master brief is empty."}); return
-                self.lifecycle="planning"; self.status="planning"; self.current_step=f"Planning project with {self.provider_name(provider)}"; self.emit_event({"kind":"step","badge":"PLAN!","status":"planning","text":self.current_step}); self._send_result_to_chatgpt(self.start_prompt()); return
             if msg_type=="build_controller_prompt":
                 if self.lifecycle in {"ready_to_arm","setup","idle","protocol_error","protocol_blocked","paused"}:
                     if self.lifecycle in {"ready_to_arm","setup"}: self.budget.reset(provider)
@@ -240,16 +285,59 @@ class MessageMixin:
                 if not request: self.emit_event({"kind":"error","text":"Course-change request is empty."}); return
                 self.paused=False; self.lifecycle="change_review"; self.status="change_review"; self.current_step="Reviewing requested roadmap change"; self.emit_event({"kind":"step","badge":"PIVOT?","status":"change_review","text":self.current_step}); self._send_result_to_chatgpt(self.course_change_prompt(request)); return
             self.paused=False; self.lifecycle="finishing"; self.status="finishing"; self.current_step="Running project closeout and final verification"; self.emit_event({"kind":"step","badge":"CHECK!","status":"finishing","text":self.current_step}); self._send_result_to_chatgpt(self.finish_prompt()); return
-        elif msg_type=="pause": self.paused=True; self.lifecycle="paused"; self.status="paused"; self.emit_event({"kind":"step","badge":"HOLD","status":"paused","text":"Workflow paused by user."})
+        elif msg_type=="pause":
+            # Do not wait for an in-flight command or browser download.
+            # Stop subsequent work; an already started command may finish.
+            self.paused = True
+            self.lifecycle = "paused"
+            self.status = "provider_guard" if self.provider_guard else "paused"
+            timer = getattr(self, "pending_send_timer", None)
+            if timer is not None:
+                timer.cancel()
+                self.pending_send_timer = None
+            self.current_step = "Workflow paused by user"
+            self.emit_event({"kind": "step", "badge": "HOLD", "status": "paused", "text": "Workflow paused by user. No new work will be started."})
+            self.emit({"kind": "state", "state": self.state()})
         elif msg_type=="resume":
+            if getattr(self, "command_execution_active", False) or getattr(self, "download_waiters", {}):
+                self.emit_event({"kind": "error", "text": "Wait for in-flight work to finish before resuming."})
+                return
             if self.provider_guard: self.emit_event({"kind":"error","text":"Provider safety guard is active. Resolve the rate-limit/auth/security warning in the provider UI, then use RESET RUN BUDGET to explicitly start a fresh guarded session."}); return
             self.paused=False; self.lifecycle="running"; self.status="idle"; self.emit_event({"kind":"step","badge":"GO!","status":"idle","text":"Workflow resumed."})
         elif msg_type=="reset_session":
-            self.provider_guard=False; self.paused=False; self.budget.reset(self.active_provider); self.status="idle"
-            if self.lifecycle in {"paused","budget_exhausted"}: self.lifecycle="running"
-            self.emit_event({"kind":"step","badge":"RESET","status":self.lifecycle,"text":"Autonomy budget reset by user. Provider safety cooldown cleared explicitly."}); self.emit({"kind":"state","state":self.state()})
+            # Reset counters and the explicitly acknowledged provider cooldown,
+            # not the execution lifecycle. Resume/arm must remain separate.
+            with self.lock:
+                self.provider_guard = False
+                self.budget.reset(self.active_provider)
+                if self.status == "provider_guard" and self.paused:
+                    self.status = "paused"
+                self.emit_event({
+                    "kind": "step",
+                    "badge": "RESET",
+                    "status": self.status,
+                    "text": "Autonomy budget reset by user. Provider safety cooldown cleared explicitly. Workflow lifecycle unchanged.",
+                })
+                self.emit({"kind": "state", "state": self.state()})
         elif msg_type=="provider_safety_signal":
-            payload=message.get("payload") or {}; provider=str(payload.get("provider") or self.active_provider); self.active_provider=provider; reason=f"{payload.get('kind') or 'provider safety warning'}: {payload.get('text') or 'provider asked automation to stop'}"; self.provider_guard=True; self.paused=True; self.lifecycle="paused"; self.status="provider_guard"; self.budget.block(reason); self.current_step="Provider account-safety guard triggered"; self.emit_event({"kind":"step","badge":"SHIELD!","status":"paused","text":f"{self.provider_name(provider)} showed a rate-limit/auth/security warning. Automation stopped immediately; no automatic retry or provider fallback will occur."}); self.telegram.send_report(f"🛡 AI Workflow Bridge paused\nProvider: {self.provider_name(provider)}\nReason: {reason[:700]}\nNo automatic retry/fallback will run.")
+            with self.lock:
+                payload = message.get("payload") or {}
+                provider = str(payload.get("provider") or self.active_provider)
+                self.active_provider = provider
+                reason = f"{payload.get('kind') or 'provider safety warning'}: {payload.get('text') or 'provider asked automation to stop'}"
+                self.provider_guard = True
+                self.paused = True
+                self.lifecycle = "paused"
+                self.status = "provider_guard"
+                timer = getattr(self, "pending_send_timer", None)
+                if timer is not None:
+                    timer.cancel()
+                    self.pending_send_timer = None
+                self.budget.block(reason)
+                self.current_step = "Provider account-safety guard triggered"
+                self.emit_event({"kind": "step", "badge": "SHIELD!", "status": "paused", "text": f"{self.provider_name(provider)} showed a rate-limit/auth/security warning. Automation stopped immediately; no automatic retry or provider fallback will occur."})
+                self.emit({"kind": "state", "state": self.state()})
+            self.telegram.send_report(f"🛡 AI Workflow Bridge paused\nProvider: {self.provider_name(provider)}\nReason: {reason[:700]}\nNo automatic retry/fallback will run.")
         elif msg_type=="assistant_response":
             payload=message.get("payload") or {}; provider=str(payload.get("provider") or self.active_provider); self.active_provider=provider; self.emit_event({"kind":"info","badge":"POP!","text":f"Completed {self.provider_name(provider)} response captured; inspecting workflow protocol."}); threading.Thread(target=self.process_assistant_response,args=(payload,),daemon=True).start()
         elif msg_type=="approval_decision": self.resolve_approval(str(message.get("approval_id") or ""),str(message.get("decision") or ""))
@@ -257,6 +345,21 @@ class MessageMixin:
             request_id=str(message.get("request_id") or ""); waiter=self.download_waiters.get(request_id)
             if waiter: waiter["response"]=message; waiter["event"].set()
         elif msg_type=="chat_send_ack":
+            if self.paused or self.provider_guard:
+                return
             if message.get("ok") and message.get("submitted",True): self.status="waiting_llm"; self.current_step=f"Prompt submitted; waiting for {self.provider_name(self.active_provider)}"; self.emit_event({"kind":"step","badge":"ARMED","status":self.lifecycle,"text":self.current_step})
             else: self.status="error"; self.current_step="LLM prompt submission failed"; self.emit_event({"kind":"error","text":f"Could not send prompt/result to {self.provider_name(self.active_provider)}: {message.get('error') or 'submission was not confirmed'}"})
-        elif msg_type=="chat_response_timeout": self.emit_event({"kind":"info","badge":"STUCK?","text":str(message.get("text") or "No completed LLM response has been detected yet.")})
+        elif msg_type=="chat_response_timeout":
+            with self.lock:
+                if self.paused or self.status not in {"waiting_llm", "waiting_chatgpt"}:
+                    return
+                self.paused = True
+                self.lifecycle = "paused"
+                self.status = "paused"
+                timer = getattr(self, "pending_send_timer", None)
+                if timer is not None:
+                    timer.cancel()
+                    self.pending_send_timer = None
+                self.current_step = "Response timeout; manual review required"
+                self.emit_event({"kind": "step", "badge": "STUCK?", "status": "paused", "text": "No completed LLM response detected. Workflow paused for manual review. No automatic retry."})
+                self.emit({"kind": "state", "state": self.state()})

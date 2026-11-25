@@ -656,3 +656,220 @@ def test_runtime_snapshot_persists_budget_state():
     assert snapshot["version"] == 2
     assert snapshot["budget"]["provider_id"] == "chatgpt"
     assert len(snapshot["budget"]["turn_timestamps"]) == 1
+
+
+def test_reset_budget_after_discard_never_resumes_or_replays():
+    bridge, emitted, sent = _make_recovery_bridge()
+    bridge.handle({"type": "recovery_discard"})
+    bridge.budget.record_send()
+    previous_step = bridge.current_step
+
+    bridge.handle({"type": "reset_session"})
+
+    assert bridge.lifecycle == "paused"
+    assert bridge.status == "paused"
+    assert bridge.paused is True
+    assert bridge.current_step == previous_step
+    assert bridge.pending == {}
+    assert bridge.budget.public(bridge.config)["session_turns"] == 0
+    assert sent == []
+    assert not any(event.get("kind") == "send_to_llm" for event in emitted)
+
+
+def test_reset_budget_does_not_bypass_unreviewed_recovery():
+    bridge, emitted, sent = _make_recovery_bridge()
+    bridge.handle({"type": "reset_session"})
+
+    assert bridge.lifecycle == "recovery_required"
+    assert bridge.paused is True
+    assert bridge.recovery_context is not None
+    assert bridge.pending
+    assert sent == []
+
+
+def test_reset_budget_clears_acknowledged_guard_without_resuming():
+    bridge, emitted, sent = _make_recovery_bridge()
+    bridge.provider_guard = True
+    bridge.budget.block("rate limit")
+    bridge.handle({"type": "recovery_discard"})
+    bridge.handle({"type": "reset_session"})
+
+    assert bridge.provider_guard is False
+    assert bridge.lifecycle == "paused"
+    assert bridge.status == "paused"
+    assert bridge.paused is True
+    assert sent == []
+
+
+def test_reset_budget_does_not_change_running_status():
+    bridge, emitted, sent = _make_recovery_bridge()
+    bridge.lifecycle = "running"
+    bridge.status = "waiting_llm"
+    bridge.paused = False
+    bridge.recovery_context = None
+    bridge.pending.clear()
+
+    bridge.handle({"type": "reset_session"})
+
+    assert bridge.lifecycle == "running"
+    assert bridge.status == "waiting_llm"
+    assert bridge.paused is False
+    assert sent == []
+
+
+def test_explicit_planning_after_discard_uses_new_provider_without_resuming_old_run():
+    bridge, emitted, sent = _make_recovery_bridge()
+    bridge.handle({"type": "recovery_discard"})
+    bridge.handle({"type": "reset_session"})
+    bridge.config = {"project_goal": "Plan a calculator", "provider_id": "glm", "provider_mode": "manual"}
+    bridge.start_prompt = lambda: "PLAN ONLY"
+
+    def capture(text):
+        assert bridge.paused is False
+        assert bridge.lifecycle == "planning"
+        sent.append(text)
+
+    bridge._send_result_to_chatgpt = capture
+    bridge.handle({"type": "build_start_prompt", "provider": "glm"})
+
+    assert bridge.active_provider == "glm"
+    assert bridge.budget.provider_id == "glm"
+    assert bridge.pending == {}
+    assert sent == ["PLAN ONLY"]
+
+
+def test_planning_does_not_clear_provider_guard_or_switch_provider():
+    bridge, emitted, sent = _make_recovery_bridge()
+    bridge.provider_guard = True
+    bridge.handle({"type": "recovery_discard"})
+    bridge.config = {"project_goal": "Plan a calculator", "provider_id": "glm"}
+    bridge.handle({"type": "build_start_prompt", "provider": "glm"})
+
+    assert bridge.paused is True
+    assert bridge.provider_guard is True
+    assert bridge.active_provider == "chatgpt"
+    assert sent == []
+
+
+def test_planning_refuses_active_work_approvals_pending_sends_and_mismatched_provider():
+    for reason in ("running", "approval", "command", "timer", "provider"):
+        bridge, emitted, sent = _make_recovery_bridge()
+        bridge.handle({"type": "recovery_discard"})
+        bridge.config = {"project_goal": "Plan a calculator", "provider_id": "glm"}
+        provider = "glm"
+        if reason == "running":
+            bridge.lifecycle = "running"
+        elif reason == "approval":
+            bridge.pending["old"] = {}
+        elif reason == "command":
+            bridge.command_execution_active = True
+        elif reason == "timer":
+            bridge.pending_send_timer = object()
+        else:
+            provider = "claude"
+        bridge.handle({"type": "build_start_prompt", "provider": provider})
+
+        assert bridge.active_provider == "chatgpt"
+        assert bridge.lifecycle != "planning"
+        assert sent == []
+
+
+def test_safety_warning_cancels_pending_send_and_ignores_late_ack():
+    from unittest.mock import Mock
+
+    bridge, emitted, sent = _make_recovery_bridge()
+    bridge.handle({"type": "recovery_discard"})
+    bridge.lifecycle = "planning"
+    bridge.status = "waiting_llm"
+    bridge.paused = False
+    bridge.active_provider = "glm"
+    bridge.telegram = Mock()
+    timer = Mock()
+    bridge.pending_send_timer = timer
+
+    bridge.handle({"type": "provider_safety_signal", "payload": {
+        "provider": "glm", "kind": "auth_challenge", "text": "Security verification",
+    }})
+    timer.cancel.assert_called_once()
+    assert bridge.pending_send_timer is None
+    assert bridge.paused is True
+    assert bridge.lifecycle == "paused"
+    assert bridge.provider_guard is True
+    assert bridge.budget.public(bridge.config)["cooldown_until"] == "manual"
+
+    for message in (
+        {"type": "chat_send_ack", "ok": True, "submitted": True},
+        {"type": "chat_send_ack", "ok": False},
+        {"type": "chat_response_timeout"},
+        {"type": "resume"},
+        {"type": "build_controller_prompt", "provider": "glm"},
+        {"type": "change_course", "provider": "glm"},
+        {"type": "finish_project", "provider": "glm"},
+    ):
+        bridge.handle(message)
+        assert bridge.status == "provider_guard"
+        assert bridge.paused is True
+        assert bridge.provider_guard is True
+
+    assert sent == []
+
+
+def test_unknown_response_timeout_pauses_without_retry():
+    from unittest.mock import Mock
+
+    bridge, emitted, sent = _make_recovery_bridge()
+    bridge.handle({"type": "recovery_discard"})
+    bridge.lifecycle = "planning"
+    bridge.status = "waiting_llm"
+    bridge.paused = False
+    timer = Mock()
+    bridge.pending_send_timer = timer
+
+    bridge.handle({"type": "chat_response_timeout"})
+
+    timer.cancel.assert_called_once()
+    assert bridge.pending_send_timer is None
+    assert bridge.lifecycle == "paused"
+    assert bridge.paused is True
+    assert bridge.status == "paused"
+    assert sent == []
+
+
+def test_planning_ack_distinguishes_guard_rejection_from_acceptance():
+    bridge, emitted, sent = _make_recovery_bridge()
+    bridge.handle({"type": "recovery_discard"})
+    bridge.config = {"project_goal": "Plan a calculator", "provider_id": "glm"}
+    bridge.start_prompt = lambda: "PLAN ONLY"
+    bridge.provider_guard = True
+    bridge.status = "provider_guard"
+    request = {"type": "build_start_prompt", "provider": "glm", "action_request_id": "blocked"}
+    bridge.handle(request)
+    assert sent == []
+    assert bridge.paused
+    assert bridge.provider_guard
+    assert any(e.get("kind") == "action_ack" and e.get("action_request_id") == "blocked" and e.get("ok") is False for e in emitted)
+    assert any(e.get("badge") == "BLOCKED" for e in emitted)
+    bridge.handle({"type": "reset_session"})
+    bridge.handle({**request, "action_request_id": "accepted"})
+    assert sent == ["PLAN ONLY"]
+    assert any(e.get("kind") == "action_ack" and e.get("action_request_id") == "accepted" and e.get("ok") is True for e in emitted)
+    assert not any(e.get("badge") == "ARMED" for e in emitted)
+
+
+def test_save_ack_is_emitted_only_after_native_save(monkeypatch):
+    import orchestrator_messages
+    bridge, emitted, sent = _make_recovery_bridge()
+    bridge.handle({"type": "recovery_discard"})
+    trace = []
+    def save(config):
+        trace.append("persisted")
+        return config
+    monkeypatch.setattr(orchestrator_messages, "save_config", save)
+    original = bridge.emit
+    def emit(event):
+        if event.get("kind") == "action_ack":
+            assert trace == ["persisted"]
+        original(event)
+    bridge.emit = emit
+    bridge.handle({"type": "set_config", "action_request_id": "save-1", "config": {"project_goal": "test"}})
+    assert any(e.get("kind") == "action_ack" and e.get("action_request_id") == "save-1" and e.get("ok") is True for e in emitted)

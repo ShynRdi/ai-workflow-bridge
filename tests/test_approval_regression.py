@@ -12,8 +12,23 @@ def test_policy_path_inspection_is_low_risk():
 
 
 def test_approved_index_bypasses_reapproval_once(tmp_path, monkeypatch):
-    events=[]; orch=Orchestrator(events.append); orch.config["workspace_root"]=str(tmp_path); orch.config["auto_run_low_risk"]=True
+    import config
+    import storage
+
+    # A fresh runtime is required even when another test has persisted state.
+    home = tmp_path / "bridge-home"
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    monkeypatch.setattr(config, "APP_DIR", home)
+    monkeypatch.setattr(config, "CONFIG_PATH", home / "config.json")
+    monkeypatch.setattr(storage, "DB_PATH", home / "bridge.sqlite3")
+    events=[]; orch=Orchestrator(events.append); orch.config["workspace_root"]=str(workspace); orch.config["auto_run_low_risk"]=True
+    assert not orch.paused
+    assert not orch.provider_guard
     contract=WorkflowContract(version=1,phase="CP-0",stage="BOOTSTRAP",summary="approval regression",decision_required=False,decision_reason="",downloads=[],commands=[CommandSpec(cmd='python3 -c "print(123)"',cwd='.',purpose='run approved command')],success_conditions=["exit 0"],next_step="done")
     sent=[]; monkeypatch.setattr(orch,"_send_result_to_chatgpt",sent.append)
     orch._run_command_and_continue(contract,0,approved_index=0)
-    assert not orch.pending; assert any(e.get("badge")=="PASS" for e in events); assert sent
+    assert not orch.pending, events
+    assert any(e.get("badge") == "PASS" for e in events), events
+    assert sent, events
+    assert any(e.get("kind") == "checkpoint" for e in events), events

@@ -847,3 +847,152 @@ print(json.dumps({
     assert final[
         "events"
     ] == []
+
+
+def test_discard_pause_late_ack_and_restart_stays_paused(tmp_path):
+    home = tmp_path / "bridge-home"
+    run_process(r'''
+from orchestrator import Orchestrator
+bridge = Orchestrator(lambda _: None)
+bridge.lifecycle = "planning"
+bridge.status = "waiting_llm"
+bridge.current_step = "done"
+bridge.paused = False
+bridge._persist_runtime_state()
+''', home)
+    run_process(r'''
+from orchestrator import Orchestrator
+events = []
+bridge = Orchestrator(events.append)
+assert bridge.lifecycle == "recovery_required"
+bridge.handle({"type": "recovery_discard"})
+bridge.handle({"type": "pause"})
+bridge.handle({"type": "chat_send_ack", "ok": True, "submitted": True})
+bridge.handle({"type": "chat_response_timeout"})
+assert bridge.lifecycle == bridge.status == "paused"
+assert bridge.current_step == "Workflow paused by user"
+assert not any(e.get("kind") == "send_to_llm" for e in events)
+''', home)
+    final = read_json_process(r'''
+import json
+from orchestrator import Orchestrator
+events = []
+bridge = Orchestrator(events.append)
+print(json.dumps({"state": bridge.state(), "events": events}))
+''', home)
+    assert final["state"]["lifecycle"] == "paused"
+    assert final["state"]["status"] == "paused"
+    assert final["state"]["recovery"] is None
+    assert final["events"] == []
+
+
+def test_offline_native_workflow_plan_approval_review_and_finish(tmp_path):
+    """Exercise real native state and runner; browser/provider are simulated."""
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    for args in (
+        ("init", "-q"),
+        ("config", "user.name", "AWB Test"),
+        ("config", "user.email", "awb@example.invalid"),
+    ):
+        subprocess.run(["git", *args], cwd=workspace, check=True, capture_output=True)
+    (workspace / "README.md").write_text("# Disposable test\n", encoding="utf-8")
+    subprocess.run(["git", "add", "README.md"], cwd=workspace, check=True)
+    subprocess.run(["git", "commit", "-qm", "base"], cwd=workspace, check=True)
+
+    script = r'''
+import json
+from pathlib import Path
+from unittest.mock import Mock, patch
+
+from orchestrator import Orchestrator
+from project_state import load_project_state
+
+workspace = Path(__WORKSPACE__)
+events = []
+bridge = Orchestrator(events.append)
+bridge.telegram = Mock()
+bridge.handle({"type": "set_config", "action_request_id": "save", "config": {
+    "project_name": "Offline integration",
+    "project_goal": "Create and verify a local result file.",
+    "workspace_root": str(workspace),
+    "provider_id": "glm", "provider_mode": "manual",
+    "auto_run_low_risk": False,
+}})
+assert any(e.get("kind") == "action_ack" and e.get("action_request_id") == "save" and e.get("ok") for e in events), events
+
+def outbound():
+    return [e for e in events if e.get("kind") == "send_to_llm"]
+
+def ack():
+    bridge.handle({"type": "chat_send_ack", "request_id": outbound()[-1]["request_id"], "ok": True, "submitted": True, "provider": "glm"})
+
+def response(text):
+    # Deterministic provider fixture, not a network/browser operation.
+    bridge.process_assistant_response({"provider": "glm", "text": text})
+
+def contract(stage, command):
+    return "<<<AI_WORKFLOW>>>\n" + json.dumps({
+        "version": 1, "phase": "P0", "stage": stage,
+        "summary": "Offline integration " + stage,
+        "commands": [{"cmd": command, "cwd": ".", "purpose": "Local fixture"}],
+        "next_step": "Review evidence",
+    }) + "\n<<<END_AI_WORKFLOW>>>"
+
+def accept_review():
+    review = load_project_state(str(workspace))["stage_review"]
+    bridge.handle({"type": "stage_review_decision", "decision": "accept",
+                   "review_id": review["review_id"], "phase": review["phase"],
+                   "stage": review["stage"]})
+    assert load_project_state(str(workspace))["stage_review"]["status"] == "accepted", events
+
+# Timing gates have their own tests; eliminate only the wait in this fixture.
+# Outbound messages are captured in memory, never delivered to any website.
+with patch.object(bridge.budget, "decision", return_value={"allowed": True, "delay": 0}):
+    bridge.handle({"type": "build_start_prompt", "provider": "glm", "action_request_id": "plan"})
+    assert len(outbound()) == 1 and "PLAN ONLY" in outbound()[-1]["text"], events
+    ack()
+    response("<<<AI_WORKFLOW_ROADMAP>>>\n" + json.dumps({"phases": [{
+        "id": "P0", "title": "Offline fixture", "stages": ["BUILD", "VERIFY"],
+        "acceptance_criteria": {"BUILD": ["result.txt contains 42"], "VERIFY": ["local verification passes"]},
+    }]}) + "\n<<<END_AI_WORKFLOW_ROADMAP>>>\nREADY_TO_ARM")
+    assert bridge.lifecycle == "ready_to_arm", events
+    assert (workspace / ".ai-workflow" / "ROADMAP.md").is_file()
+    bridge.handle({"type": "build_controller_prompt", "provider": "glm"})
+    assert len(outbound()) == 2, events
+    ack()
+    response(contract("BUILD", "python3 -c \"from pathlib import Path; Path('result.txt').write_text('42')\""))
+    assert len(bridge.pending) == 1 and not (workspace / "result.txt").exists(), events
+    bridge.handle({"type": "approval_decision", "approval_id": next(iter(bridge.pending)), "decision": "approve"})
+    assert (workspace / "result.txt").read_text() == "42", events
+    assert any(e.get("kind") == "checkpoint" for e in events), events
+    assert len(outbound()) == 3 and "EXECUTION REPORT" in outbound()[-1]["text"], events
+    ack()
+    verify = contract("VERIFY", "git status --short")
+    response(verify)
+    assert bridge.lifecycle == "review_required", events
+    assert load_project_state(str(workspace))["current"]["stage"] == "BUILD"
+    assert not bridge.pending
+    accept_review()
+    response(verify)
+    assert load_project_state(str(workspace))["current"]["stage"] == "VERIFY"
+    assert len(bridge.pending) == 1, events
+    bridge.handle({"type": "approval_decision", "approval_id": next(iter(bridge.pending)), "decision": "approve"})
+    assert len(outbound()) == 4, events
+    ack()
+    bridge.handle({"type": "stage_review_collect"})
+    assert bridge.lifecycle == "review_required", events
+    accept_review()
+    bridge.handle({"type": "finish_project", "provider": "glm"})
+    assert len(outbound()) == 5, events
+    ack()
+    response("Verification complete.\n<<<AI_WORKFLOW_PROJECT_DONE>>>")
+    assert bridge.lifecycle == "complete" and bridge.paused, events
+    assert load_project_state(str(workspace))["status"] == "complete"
+    assert not bridge.pending
+    assert len(outbound()) == 5
+
+print(json.dumps({"lifecycle": bridge.lifecycle, "outbound": len(outbound())}))
+'''.replace("__WORKSPACE__", repr(str(workspace)))
+    result = read_json_process(script, tmp_path / "bridge-home")
+    assert result == {"lifecycle": "complete", "outbound": 5}

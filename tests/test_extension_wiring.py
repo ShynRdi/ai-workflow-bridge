@@ -805,3 +805,94 @@ def test_checkpoint_browser_actions_forward_exact_checkpoint_identity():
         "checkpoint_id: checkpointId"
         in rollback_block
     )
+
+
+def test_sidepanel_provider_card_handles_real_dom_event_arguments():
+    script = r"""
+const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const vm = require("node:vm");
+const path = require("node:path");
+const root = process.argv[1];
+const nodes = new Map();
+class Node extends EventTarget {
+  constructor() { super(); this.value = ""; this.checked = false; }
+  replaceChildren() {}
+  append() {}
+}
+const document = {
+  getElementById(id) {
+    if (!nodes.has(id)) nodes.set(id, new Node());
+    return nodes.get(id);
+  },
+  createElement() { return new Node(); }
+};
+const context = vm.createContext({document});
+vm.runInContext(fs.readFileSync(path.join(root, "providers.js"), "utf8"), context);
+const source = fs.readFileSync(path.join(root, "sidepanel.js"), "utf8");
+const start = source.indexOf('populateProviders(); $("providerId").value');
+const end = source.indexOf('$("grantProvider").addEventListener', start);
+assert.ok(start >= 0 && end > start);
+vm.runInContext(source.slice(0, source.indexOf("async function providerForActiveTab")) +
+                source.slice(start, end), context);
+const get = id => document.getElementById(id);
+assert.equal(get("providerStatus").textContent, "STABLE");
+get("providerId").value = "glm";
+get("providerId").dispatchEvent(new Event("change"));
+assert.equal(get("providerName").textContent, "Z.ai / GLM");
+assert.equal(get("providerStatus").textContent, "BETA");
+get("providerAuto").checked = true;
+get("providerAuto").dispatchEvent(new Event("change"));
+assert.equal(get("providerDetail").textContent, "Auto-detect active tab");
+get("providerAuto").checked = false;
+get("providerAuto").dispatchEvent(new Event("change"));
+get("modelLabel").value = "GLM test model";
+get("modelLabel").dispatchEvent(new Event("input"));
+assert.equal(get("providerDetail").textContent, "Selected · GLM test model");
+vm.runInContext('lastState = { lifecycle: "paused", active_provider_name: "ChatGPT" }; updateProviderCard();', context);
+assert.equal(get("activeProvider").textContent, "Z.AI / GLM");
+assert.equal(get("providerDetail").textContent, "Selected · GLM test model · last runtime: ChatGPT");
+vm.runInContext('lastState = { lifecycle: "planning", active_provider_name: "Z.ai / GLM" }; updateProviderCard();', context);
+assert.equal(get("activeProvider").textContent, "Z.AI / GLM");
+assert.equal(get("providerDetail").textContent, "Runtime provider · selected: Z.ai / GLM");
+"""
+    subprocess.run(["node", "-e", script, str(EXT)], check=True)
+
+
+def test_visible_glm_security_verification_stops_content_script():
+    script = r"""
+const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const vm = require("node:vm");
+const source = fs.readFileSync(process.argv[1], "utf8");
+const start = source.indexOf("  function safetySignal()");
+const end = source.indexOf("  chrome.runtime.onMessage.addListener", start);
+assert.ok(start >= 0 && end > start);
+const document = {body: {innerText: ""}};
+const provider = {id: "glm", name: "Z.ai / GLM"};
+const signals = [];
+const nodes = [];
+const context = vm.createContext({
+  document, provider, location: {href: "https://chat.z.ai/"},
+  queryAll: () => nodes, visible: n => n.visible,
+  getComputedStyle: n => n.style || {},
+  chrome: {runtime: {sendMessage: msg => {signals.push(msg); return Promise.resolve({ok:true});}}}
+});
+vm.runInContext('let lastSafetySignal = "";' + source.slice(start, end), context);
+const inspect = () => vm.runInContext("inspectSafety()", context);
+assert.equal(inspect(), null);
+document.body.innerText = "Please complete security verification\nPlease drag the slider to complete the puzzle";
+assert.equal(inspect().kind, "auth_challenge");
+assert.equal(signals.length, 1);
+assert.throws(() => vm.runInContext("requireNoSafetyChallenge()", context), /Automation stopped/);
+assert.equal(signals.length, 1);
+document.body.innerText = "";
+nodes.push({visible: false, innerText: "Security verification", style: {display: "none"}});
+assert.equal(inspect(), null);
+nodes.push({visible: true, innerText: "Security verification"});
+assert.equal(inspect().kind, "auth_challenge");
+assert.equal(signals.length, 2);
+assert.ok(source.includes("if (inspectSafety()) { candidate = null;"));
+assert.ok(source.includes("requireNoSafetyChallenge(); const sendButton"));
+"""
+    subprocess.run(["node", "-e", script, str(EXT / "content.js")], check=True)

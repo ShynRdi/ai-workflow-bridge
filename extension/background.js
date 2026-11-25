@@ -24,6 +24,7 @@ const NATIVE_RECONNECT_DELAYS_MS = [2500, 5000, 10000, 20000, 30000];
 const DIAGNOSTICS_TIMEOUT_MS = 6000;
 const PROVISIONAL_SEAL_AUTH_TTL_MS = 10000;
 const pendingDiagnostics = new Map();
+const pendingActionAcks = new Map();
 
 const providers = globalThis.AWB_PROVIDERS || [];
 const utils = globalThis.AWB_PROVIDER_UTILS;
@@ -63,6 +64,11 @@ function handleNativeDisconnect(port, reason = "") {
 
   nativePort = null;
   nativeReady = false;
+  for (const pending of pendingActionAcks.values()) {
+    clearTimeout(pending.timeout);
+    pending.reject(new Error("Native host disconnected; action outcome unknown. Refresh status; no retry."));
+  }
+  pendingActionAcks.clear();
 
   const text =
     reason ||
@@ -168,6 +174,23 @@ function sendNative(message) {
   }
 
   nativePort.postMessage(message);
+}
+
+function requestNativeAction(message) {
+  const action_request_id = crypto.randomUUID();
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      pendingActionAcks.delete(action_request_id);
+      reject(new Error("Native action outcome is unknown. Refresh status before any further action; no retry was attempted."));
+    }, 10000);
+    pendingActionAcks.set(action_request_id, { action: message.type, resolve, reject, timeout });
+    try { sendNative({ ...message, action_request_id }); }
+    catch (error) {
+      clearTimeout(timeout);
+      pendingActionAcks.delete(action_request_id);
+      reject(error);
+    }
+  });
 }
 
 function providerForUrl(url = "") {
@@ -737,7 +760,7 @@ function startResponseWatchdog(providerName = "LLM") {
   clearResponseWatchdog();
   responseWatchdog = setTimeout(() => {
     responseWatchdog = null;
-    try { sendNative({ type: "chat_response_timeout", text: `No completed ${providerName} response has been detected. If it is still generating, keep waiting; otherwise refresh the provider tab.` }); } catch {}
+    try { sendNative({ type: "chat_response_timeout", text: `No completed ${providerName} response has been detected. Workflow stopped for manual review; do not retry or refresh automatically.` }); } catch {}
   }, 120000);
 }
 
@@ -1198,6 +1221,17 @@ async function runDiagnostics() {
 async function handleNativeMessage(message) {
   markNativeReady(message);
 
+  if (message?.kind === "action_ack") {
+    const id = message.action_request_id;
+    const pending = pendingActionAcks.get(id);
+    if (pending && message.action === pending.action) {
+      clearTimeout(pending.timeout);
+      pendingActionAcks.delete(id);
+      pending.resolve({ ok: message.ok === true, error: message.reason || "", nativeAcknowledged: true });
+    }
+    return;
+  }
+
   if (message?.kind === "diagnostics_result") {
     const requestId = String(message.request_id || "");
     const pending = pendingDiagnostics.get(requestId);
@@ -1399,6 +1433,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         ].join(" ");
       }
 
+      clearResponseWatchdog();
       // A safety signal from the exact workflow tab is always
       // fail-safe, even if that tab changed conversation.
       sendNative({
@@ -1574,15 +1609,18 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         };
       } else if (command.action === "save_config") {
         const cfg = command.config || {};
-        await chrome.storage.local.set({ providerMode: cfg.provider_mode || "manual", providerId: cfg.provider_id || "chatgpt" });
-        sendNative({ type: "set_config", config: cfg });
+        const ack = await requestNativeAction({ type: "set_config", config: cfg });
+        if (ack.ok) await chrome.storage.local.set({ providerMode: cfg.provider_mode || "manual", providerId: cfg.provider_id || "chatgpt" });
+        return ack;
       } else if (["plan_project", "arm", "change_course", "finish_project"].includes(command.action)) {
         const found = await findActiveLlmTab();
         if (!found?.tab?.id) throw new Error("Open a supported LLM tab that matches your AI Engine selection first.");
         await ensureContentScript(found.tab.id);
         const typeMap = { plan_project: "build_start_prompt", arm: "build_controller_prompt", change_course: "change_course", finish_project: "finish_project" };
-        sendNative({ type: typeMap[command.action], tab_id: found.tab.id, provider: found.provider.id, change_request: command.change_request || "" });
-      } else if (command.action === "pause") sendNative({ type: "pause" });
+        const request = { type: typeMap[command.action], tab_id: found.tab.id, provider: found.provider.id, change_request: command.change_request || "" };
+        if (command.action === "plan_project") return await requestNativeAction(request);
+        sendNative(request);
+      } else if (command.action === "pause") { clearResponseWatchdog(); sendNative({ type: "pause" }); }
       else if (command.action === "resume") sendNative({ type: "resume" });
       else if (command.action === "reset_session") sendNative({ type: "reset_session" });
       else if (command.action === "approval") sendNative({ type: "approval_decision", approval_id: command.approval_id, decision: command.decision });

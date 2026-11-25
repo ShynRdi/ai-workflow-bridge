@@ -14,24 +14,43 @@ function addLog(label, text) {
 }
 
 async function command(action, extra = {}) {
-  return chrome.runtime.sendMessage({ type: "BRIDGE_COMMAND", payload: { action, ...extra } });
+  const result = await chrome.runtime.sendMessage({ type: "BRIDGE_COMMAND", payload: { action, ...extra } });
+  if (!result?.ok) throw new Error(result?.error || "Bridge did not confirm the request.");
+  return result;
 }
 
 function selectedProvider() { return utils.getProvider($("providerId").value) || providers[0]; }
 function populateProviders() { $("providerId").replaceChildren(); for (const p of providers) { const option = document.createElement("option"); option.value = p.id; option.textContent = `${p.name} — ${p.status.toUpperCase()}`; $("providerId").append(option); } }
-function updateProviderCard(provider = selectedProvider()) {
+function updateProviderCard() {
+  // DOM listeners pass an Event, not a provider descriptor.
+  const provider = selectedProvider();
   $("providerName").textContent = provider.name; $("providerStatus").textContent = provider.status.toUpperCase();
   const notes = { stable: "Stable adapter. Still stops on provider security/rate-limit signals.", beta: "Beta web adapter: selectors can change when the provider updates its UI.", experimental: "Experimental adapter: verify the first few turns manually before long runs." };
   $("providerSafetyNote").textContent = `${notes[provider.status] || notes.beta} The Bridge never automates login or exports your session.`;
-  $("activeProvider").textContent = provider.name.toUpperCase().slice(0, 13);
-  const model = $("modelLabel")?.value?.trim(); $("providerDetail").textContent = model || ($("providerAuto").checked ? "Auto-detect active tab" : `${provider.status} adapter`);
+  const lifecycle = lastState.lifecycle || lastState.status || "setup";
+  const runtime = lastState.active_provider_name;
+  const passive = ["setup", "idle", "paused", "complete", "recovery_required", "budget_exhausted"].includes(lifecycle);
+  const model = $("modelLabel")?.value?.trim();
+  if (runtime && !passive) {
+    $("activeProvider").textContent = runtime.toUpperCase().slice(0, 13);
+    $("providerDetail").textContent = "Runtime provider · selected: " + provider.name;
+  } else {
+    $("activeProvider").textContent = provider.name.toUpperCase().slice(0, 13);
+    const selection = $("providerAuto").checked ? "Auto-detect active tab" : "Selected · " + (model || provider.status + " adapter");
+    $("providerDetail").textContent = runtime && lifecycle !== "setup" ? selection + " · last runtime: " + runtime : selection;
+  }
 }
 async function providerForActiveTab() { const tabs = await chrome.tabs.query({ active: true, currentWindow: true }); const tab = tabs[0]; if (!tab?.url) return null; try { return utils.detectProvider(new URL(tab.url).hostname); } catch { return null; } }
 async function effectiveProvider() { if (!$("providerAuto").checked) return selectedProvider(); const p = await providerForActiveTab(); if (!p) throw new Error("The active tab is not a supported LLM. Open one of the supported web LLMs first."); return p; }
 async function grantProviderAccess({ quiet = false } = {}) { const provider = await effectiveProvider(); const contains = await chrome.permissions.contains({ origins: provider.origins }); if (contains) { if (!quiet) addLog("SAFE", `${provider.name} site access is already granted.`); return provider; } const granted = await chrome.permissions.request({ origins: provider.origins }); if (!granted) throw new Error(`Site access for ${provider.name} was not granted.`); addLog("UNLOCK", `Granted site access only for ${provider.name}.`); return provider; }
 function numberValue(id, fallback) { const value = Number($(id).value); return Number.isFinite(value) ? value : fallback; }
 function gatherConfig() { return { project_name: $("projectName").value.trim(), project_goal: $("projectGoal").value.trim(), workspace_root: $("workspaceRoot").value.trim(), provider_mode: $("providerAuto").checked ? "auto" : "manual", provider_id: $("providerId").value, model_label: $("modelLabel").value.trim(), auto_run_low_risk: $("autoRunLowRisk").checked, min_turn_interval_seconds: numberValue("minTurnInterval", 8), max_turns_per_hour: numberValue("maxTurnsHour", 20), max_turns_per_session: numberValue("maxTurnsSession", 25), max_runtime_minutes: numberValue("maxRuntimeMinutes", 90), bot_token: $("botToken").value.trim(), chat_id: $("chatId").value.trim() }; }
-async function saveProject({ log = true } = {}) { const config = gatherConfig(); await command("save_config", { config }); if (log) addLog("SAVED", "Project, AI Engine, and safety limits saved locally."); }
+async function saveProject({ log = true } = {}) {
+  const config = gatherConfig();
+  const result = await command("save_config", { config });
+  if (!result.nativeAcknowledged) throw new Error("Native configuration acknowledgment missing. Refresh status before continuing.");
+  // Native SAVED event is authoritative; do not duplicate it locally.
+}
 function diagnosticCounts(checks = []) {
   return checks.reduce(
     (counts, item) => {
@@ -586,6 +605,12 @@ function setLifecycleButtons(state) {
     if (node) node.disabled = recoveryRequired;
   }
 
+  const providerBlocked = state.status === "provider_guard" || Boolean(state.budget?.cooldown_until);
+  if (providerBlocked) {
+    for (const id of ["planProject", "armWorkflow", "resumeWorkflow", "changeCourse", "finishProject"]) {
+      $(id).disabled = true;
+    }
+  }
   if ($("prepareRecovery")) {
     $("prepareRecovery").disabled = !recoveryRequired;
   }
@@ -690,7 +715,7 @@ function handleEvent(event) { if (!event) return; if (event.kind === "host_statu
       $("hostStatusDetail").textContent = event.text || "Native Messaging";
       addLog(event.connected ? "KAPOW" : "UH-OH", event.text || "Host status changed");
     }
-  } else if (event.kind === "execution_diagnostics_result") { const d = event.diagnostics || {}; $("executionDiagnosticsSummary").textContent = d.summary || `Docker readiness: ${d.readiness?.summary || "unknown"}; mode: ${d.mode || "unknown"}.`; $("executionReadiness").textContent = d.readiness?.summary || d.summary || "Unknown"; addLog("EXECUTION", $("executionDiagnosticsSummary").textContent); } else if (event.kind === "state") { const state = event.state || {}; lastState = state; const lifecycle = state.lifecycle || state.status || "setup"; $("runStatus").textContent = String(lifecycle).replaceAll("_", " ").toUpperCase(); $("runStatusDetail").textContent = state.current_step || "No active workflow"; fillConfig(state.config || {}); fillBudget(state.budget || {}, state.config || {}); renderCheckpoint(state); renderRecovery(state); renderStageReview(state.project_state || {}); renderPolicyProfile(state.project_state || {}, state); renderExecution(state.project_state || {}, state); setLifecycleButtons(state); if (state.active_provider_name) { $("activeProvider").textContent = state.active_provider_name.toUpperCase().slice(0,13); $("providerDetail").textContent = "active browser adapter"; } } else if (event.kind === "recovery_resolved") {
+  } else if (event.kind === "execution_diagnostics_result") { const d = event.diagnostics || {}; $("executionDiagnosticsSummary").textContent = d.summary || `Docker readiness: ${d.readiness?.summary || "unknown"}; mode: ${d.mode || "unknown"}.`; $("executionReadiness").textContent = d.readiness?.summary || d.summary || "Unknown"; addLog("EXECUTION", $("executionDiagnosticsSummary").textContent); } else if (event.kind === "state") { const state = event.state || {}; lastState = state; const lifecycle = state.lifecycle || state.status || "setup"; $("runStatus").textContent = String(lifecycle).replaceAll("_", " ").toUpperCase(); $("runStatusDetail").textContent = state.current_step || "No active workflow"; fillConfig(state.config || {}); fillBudget(state.budget || {}, state.config || {}); renderCheckpoint(state); renderRecovery(state); renderStageReview(state.project_state || {}); renderPolicyProfile(state.project_state || {}, state); renderExecution(state.project_state || {}, state); setLifecycleButtons(state); } else if (event.kind === "recovery_resolved") {
     $("recoveryPanel")?.classList.add("hidden");
     addLog(
       "RECOVERED",
@@ -768,7 +793,7 @@ function handleEvent(event) { if (!event) return; if (event.kind === "host_statu
         100,
       );
     }
-  } else if (event.kind === "error") { $("runStatus").textContent = "PAUSED"; $("runStatusDetail").textContent = event.text || "Workflow error"; addLog("CRASH", event.text || "Unknown error"); } else if (event.kind === "info") addLog(event.badge || "INFO", event.text || "Update"); }
+  } else if (event.kind === "error") { addLog(event.badge || "ERROR", event.text || "Unknown error"); command("get_state").catch(() => {}); } else if (event.kind === "info") addLog(event.badge || "INFO", event.text || "Update"); }
 chrome.runtime.onMessage.addListener((message) => { if (message?.type === "BRIDGE_EVENT") handleEvent(message.payload); });
 populateProviders(); $("providerId").value = "chatgpt"; updateProviderCard(); $("providerId").addEventListener("change", updateProviderCard); $("providerAuto").addEventListener("change", updateProviderCard); $("modelLabel").addEventListener("input", updateProviderCard); $("grantProvider").addEventListener("click", () => grantProviderAccess().catch((e) => addLog("NOPE", e.message))); $("saveConfig").addEventListener("click", () => saveProject().then(() => setTimeout(() => command("get_state"), 200)).catch((e) => addLog("CRASH", e.message)));
 $("runDiagnostics").addEventListener("click", () => runSystemDiagnostics());
@@ -963,7 +988,23 @@ $("rollbackCheckpoint").addEventListener(
   },
 );
 
-$("planProject").addEventListener("click", async () => { try { if (!$("projectGoal").value.trim()) throw new Error("Add a project goal/master brief before planning."); const p = await grantProviderAccess({ quiet: true }); await saveProject({ log: false }); await command("plan_project"); addLog("PLAN!", `Sent the protected project-start prompt to ${p.name}.`); } catch (e) { addLog("CRASH", e.message); } });
+$("planProject").addEventListener("click", async () => {
+  const button = $("planProject");
+  button.disabled = true;
+  try {
+    if (lastState.status === "provider_guard" || lastState.budget?.cooldown_until) throw new Error("Provider safety guard is active. Planning blocked.");
+    if (!$("projectGoal").value.trim()) throw new Error("Add a project goal/master brief before planning.");
+    await grantProviderAccess({ quiet: true });
+    await saveProject({ log: false });
+    const result = await command("plan_project");
+    if (!result.nativeAcknowledged) throw new Error("Native planning acknowledgment missing. Refresh status; do not retry automatically.");
+    // PLAN! and submission confirmation come only from the native host.
+  } catch (e) {
+    addLog("BLOCKED", String(e?.message || e));
+  } finally {
+    setLifecycleButtons(lastState);
+  }
+});
 $("armWorkflow").addEventListener("click", async () => { try { const p = await grantProviderAccess({ quiet: true }); await saveProject({ log: false }); await command("arm"); addLog("ZAP!", `Arming the current ${p.name} thread.`); } catch (e) { addLog("CRASH", e.message); } });
 $("pauseWorkflow").addEventListener("click", () => command("pause")); $("resumeWorkflow").addEventListener("click", () => command("resume")); $("refreshState").addEventListener("click", () => command("get_state")); $("resetSession").addEventListener("click", () => command("reset_session"));
 $("changeCourse").addEventListener("click", async () => { try { const text = $("changeRequest").value.trim(); if (!text) throw new Error("Describe the course change first."); await grantProviderAccess({ quiet: true }); await command("change_course", { change_request: text }); addLog("PIVOT?", "Course-change review requested. No project commands will run until you approve the impact."); } catch (e) { addLog("CRASH", e.message); } });

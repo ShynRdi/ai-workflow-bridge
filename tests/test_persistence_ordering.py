@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import sys
 import threading
+
+import pytest
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -19,9 +21,11 @@ from runner import CommandResult
 from safety import RunBudget
 
 
+@pytest.mark.parametrize("pause_during_command", [False, True])
 def test_command_state_is_persisted_before_process_execution(
     monkeypatch,
     tmp_path,
+    pause_during_command,
 ):
     trace = []
 
@@ -55,6 +59,10 @@ def test_command_state_is_persisted_before_process_execution(
     def fake_run_command(*_args, **_kwargs):
         assert trace[-1] == "persist"
         trace.append("run_command")
+        if pause_during_command:
+            bridge.paused = True
+            bridge.status = "paused"
+            bridge.current_step = "Workflow paused by user"
 
         return CommandResult(
             command="echo ok",
@@ -82,6 +90,7 @@ def test_command_state_is_persisted_before_process_execution(
                 "auto_run_low_risk": True,
             }
             self.status = "idle"
+            self.paused = False
             self.current_step = ""
             self.active_provider = "chatgpt"
             self.telegram = Telegram()
@@ -128,6 +137,9 @@ def test_command_state_is_persisted_before_process_execution(
         ],
     )
 
+    if pause_during_command:
+        contract.commands.append(CommandSpec(cmd="echo must-not-run"))
+
     orchestrator_risk.RiskAwareExecutionMixin \
         ._run_command_and_continue(
             bridge,
@@ -138,6 +150,11 @@ def test_command_state_is_persisted_before_process_execution(
     assert trace.index("persist") < trace.index(
         "run_command"
     )
+    if pause_during_command:
+        assert trace.count("run_command") == 1
+        assert "report_send" not in trace
+        assert bridge.status == "paused"
+        assert bridge.current_step == "Workflow paused by user"
 
 
 def test_download_state_is_persisted_before_browser_request():
