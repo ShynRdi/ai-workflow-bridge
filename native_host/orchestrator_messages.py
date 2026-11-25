@@ -245,9 +245,20 @@ class MessageMixin:
             if self.provider_guard: self.emit_event({"kind":"error","text":"Provider safety guard is active. Resolve the rate-limit/auth/security warning in the provider UI, then use RESET RUN BUDGET to explicitly start a fresh guarded session."}); return
             self.paused=False; self.lifecycle="running"; self.status="idle"; self.emit_event({"kind":"step","badge":"GO!","status":"idle","text":"Workflow resumed."})
         elif msg_type=="reset_session":
-            self.provider_guard=False; self.paused=False; self.budget.reset(self.active_provider); self.status="idle"
-            if self.lifecycle in {"paused","budget_exhausted"}: self.lifecycle="running"
-            self.emit_event({"kind":"step","badge":"RESET","status":self.lifecycle,"text":"Autonomy budget reset by user. Provider safety cooldown cleared explicitly."}); self.emit({"kind":"state","state":self.state()})
+            # Reset counters and the explicitly acknowledged provider cooldown,
+            # not the execution lifecycle. Resume/arm must remain separate.
+            with self.lock:
+                self.provider_guard = False
+                self.budget.reset(self.active_provider)
+                if self.status == "provider_guard" and self.paused:
+                    self.status = "paused"
+                self.emit_event({
+                    "kind": "step",
+                    "badge": "RESET",
+                    "status": self.status,
+                    "text": "Autonomy budget reset by user. Provider safety cooldown cleared explicitly. Workflow lifecycle unchanged.",
+                })
+                self.emit({"kind": "state", "state": self.state()})
         elif msg_type=="provider_safety_signal":
             payload=message.get("payload") or {}; provider=str(payload.get("provider") or self.active_provider); self.active_provider=provider; reason=f"{payload.get('kind') or 'provider safety warning'}: {payload.get('text') or 'provider asked automation to stop'}"; self.provider_guard=True; self.paused=True; self.lifecycle="paused"; self.status="provider_guard"; self.budget.block(reason); self.current_step="Provider account-safety guard triggered"; self.emit_event({"kind":"step","badge":"SHIELD!","status":"paused","text":f"{self.provider_name(provider)} showed a rate-limit/auth/security warning. Automation stopped immediately; no automatic retry or provider fallback will occur."}); self.telegram.send_report(f"🛡 AI Workflow Bridge paused\nProvider: {self.provider_name(provider)}\nReason: {reason[:700]}\nNo automatic retry/fallback will run.")
         elif msg_type=="assistant_response":
