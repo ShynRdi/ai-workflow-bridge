@@ -1,6 +1,6 @@
 (() => {
   const PROMPT = "AI Workflow Bridge provider compatibility smoke test. Reply with exactly AWB_SMOKE_OK and nothing else. Do not browse, use tools, open links, create files, or explain.";
-  const BUSY = new Set(["running", "arming", "reporting", "waiting_llm", "waiting_chatgpt", "recovering", "change_review", "finishing"]);
+  const BUSY = new Set(["planning", "recovery_required", "running", "arming", "reporting", "waiting_llm", "waiting_chatgpt", "recovering", "change_review", "finishing"]);
   const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
   function currentLifecycle() {
@@ -70,6 +70,7 @@
     let provider = selectedProvider();
     try {
       const lifecycle = currentLifecycle();
+      if (lastState?.status === "provider_guard" || lastState?.budget?.cooldown_until) throw new Error("Provider safety guard is active. Smoke test blocked.");
       if (BUSY.has(lifecycle)) throw new Error(`Project lifecycle is ${lifecycle}. Pause the workflow before testing an adapter.`);
       provider = await grantProviderAccess({ quiet: true });
       await saveProject({ log: false });
