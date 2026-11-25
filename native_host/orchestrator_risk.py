@@ -229,6 +229,8 @@ class RiskAwareExecutionMixin:
         before = git_snapshot(workspace)
 
         while index < len(contract.commands):
+            if getattr(self, "paused", False) or getattr(self, "provider_guard", False):
+                return
             spec = contract.commands[index]
             try:
                 policy_state = load_policy_state(workspace)
@@ -411,6 +413,8 @@ class RiskAwareExecutionMixin:
                 )
                 return
 
+            if getattr(self, "paused", False) or getattr(self, "provider_guard", False):
+                return
             self.status = "running"
             self.current_step = (
                 spec.purpose
@@ -455,6 +459,8 @@ class RiskAwareExecutionMixin:
             }
             accumulated.append(item)
 
+            if getattr(self, "paused", False) or getattr(self, "provider_guard", False):
+                return
             if approved_index is not None and index == approved_index:
                 approved_index = None
             badge = "PASS" if result.exit_code == 0 else "FAIL"
@@ -468,11 +474,21 @@ class RiskAwareExecutionMixin:
                 break
             index += 1
 
+        if getattr(self, "paused", False) or getattr(self, "provider_guard", False):
+            return
         after = git_snapshot(workspace)
+        if getattr(self, "paused", False) or getattr(self, "provider_guard", False):
+            return
         self.status = "reporting"
         report = self._format_result(contract, accumulated, before, after, download_bundle)
         self.telegram.send_report(self._telegram_summary(contract, accumulated, after))
+        if getattr(self, "paused", False) or getattr(self, "provider_guard", False):
+            return
         self._send_result_to_chatgpt(report)
+        if getattr(self, "paused", False) or getattr(self, "provider_guard", False):
+            return
+        if self.status == "cooldown":
+            return
         self.status = "waiting_llm"
         self.current_step = contract.next_step or f"Waiting for {self.provider_name(self.active_provider)}"
         self.emit_event({
