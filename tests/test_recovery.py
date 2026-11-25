@@ -715,3 +715,60 @@ def test_reset_budget_does_not_change_running_status():
     assert bridge.status == "waiting_llm"
     assert bridge.paused is False
     assert sent == []
+
+
+def test_explicit_planning_after_discard_uses_new_provider_without_resuming_old_run():
+    bridge, emitted, sent = _make_recovery_bridge()
+    bridge.handle({"type": "recovery_discard"})
+    bridge.handle({"type": "reset_session"})
+    bridge.config = {"project_goal": "Plan a calculator", "provider_id": "glm", "provider_mode": "manual"}
+    bridge.start_prompt = lambda: "PLAN ONLY"
+
+    def capture(text):
+        assert bridge.paused is False
+        assert bridge.lifecycle == "planning"
+        sent.append(text)
+
+    bridge._send_result_to_chatgpt = capture
+    bridge.handle({"type": "build_start_prompt", "provider": "glm"})
+
+    assert bridge.active_provider == "glm"
+    assert bridge.budget.provider_id == "glm"
+    assert bridge.pending == {}
+    assert sent == ["PLAN ONLY"]
+
+
+def test_planning_does_not_clear_provider_guard_or_switch_provider():
+    bridge, emitted, sent = _make_recovery_bridge()
+    bridge.provider_guard = True
+    bridge.handle({"type": "recovery_discard"})
+    bridge.config = {"project_goal": "Plan a calculator", "provider_id": "glm"}
+    bridge.handle({"type": "build_start_prompt", "provider": "glm"})
+
+    assert bridge.paused is True
+    assert bridge.provider_guard is True
+    assert bridge.active_provider == "chatgpt"
+    assert sent == []
+
+
+def test_planning_refuses_active_work_approvals_pending_sends_and_mismatched_provider():
+    for reason in ("running", "approval", "command", "timer", "provider"):
+        bridge, emitted, sent = _make_recovery_bridge()
+        bridge.handle({"type": "recovery_discard"})
+        bridge.config = {"project_goal": "Plan a calculator", "provider_id": "glm"}
+        provider = "glm"
+        if reason == "running":
+            bridge.lifecycle = "running"
+        elif reason == "approval":
+            bridge.pending["old"] = {}
+        elif reason == "command":
+            bridge.command_execution_active = True
+        elif reason == "timer":
+            bridge.pending_send_timer = object()
+        else:
+            provider = "claude"
+        bridge.handle({"type": "build_start_prompt", "provider": provider})
+
+        assert bridge.active_provider == "chatgpt"
+        assert bridge.lifecycle != "planning"
+        assert sent == []
