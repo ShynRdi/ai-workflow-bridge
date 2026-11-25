@@ -805,3 +805,47 @@ def test_checkpoint_browser_actions_forward_exact_checkpoint_identity():
         "checkpoint_id: checkpointId"
         in rollback_block
     )
+
+
+def test_sidepanel_provider_card_handles_real_dom_event_arguments():
+    script = r"""
+const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const vm = require("node:vm");
+const path = require("node:path");
+const root = process.argv[1];
+const nodes = new Map();
+class Node extends EventTarget {
+  constructor() { super(); this.value = ""; this.checked = false; }
+  replaceChildren() {}
+  append() {}
+}
+const document = {
+  getElementById(id) {
+    if (!nodes.has(id)) nodes.set(id, new Node());
+    return nodes.get(id);
+  },
+  createElement() { return new Node(); }
+};
+const context = vm.createContext({document});
+vm.runInContext(fs.readFileSync(path.join(root, "providers.js"), "utf8"), context);
+const source = fs.readFileSync(path.join(root, "sidepanel.js"), "utf8");
+const start = source.indexOf('populateProviders(); $("providerId").value');
+const end = source.indexOf('$("grantProvider").addEventListener', start);
+assert.ok(start >= 0 && end > start);
+vm.runInContext(source.slice(0, source.indexOf("async function providerForActiveTab")) +
+                source.slice(start, end), context);
+const get = id => document.getElementById(id);
+assert.equal(get("providerStatus").textContent, "STABLE");
+get("providerId").value = "glm";
+get("providerId").dispatchEvent(new Event("change"));
+assert.equal(get("providerName").textContent, "Z.ai / GLM");
+assert.equal(get("providerStatus").textContent, "BETA");
+get("providerAuto").checked = true;
+get("providerAuto").dispatchEvent(new Event("change"));
+assert.equal(get("providerDetail").textContent, "Auto-detect active tab");
+get("modelLabel").value = "GLM test model";
+get("modelLabel").dispatchEvent(new Event("input"));
+assert.equal(get("providerDetail").textContent, "GLM test model");
+"""
+    subprocess.run(["node", "-e", script, str(EXT)], check=True)
