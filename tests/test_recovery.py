@@ -833,3 +833,43 @@ def test_unknown_response_timeout_pauses_without_retry():
     assert bridge.paused is True
     assert bridge.status == "paused"
     assert sent == []
+
+
+def test_planning_ack_distinguishes_guard_rejection_from_acceptance():
+    bridge, emitted, sent = _make_recovery_bridge()
+    bridge.handle({"type": "recovery_discard"})
+    bridge.config = {"project_goal": "Plan a calculator", "provider_id": "glm"}
+    bridge.start_prompt = lambda: "PLAN ONLY"
+    bridge.provider_guard = True
+    bridge.status = "provider_guard"
+    request = {"type": "build_start_prompt", "provider": "glm", "action_request_id": "blocked"}
+    bridge.handle(request)
+    assert sent == []
+    assert bridge.paused
+    assert bridge.provider_guard
+    assert any(e.get("kind") == "action_ack" and e.get("action_request_id") == "blocked" and e.get("ok") is False for e in emitted)
+    assert any(e.get("badge") == "BLOCKED" for e in emitted)
+    bridge.handle({"type": "reset_session"})
+    bridge.handle({**request, "action_request_id": "accepted"})
+    assert sent == ["PLAN ONLY"]
+    assert any(e.get("kind") == "action_ack" and e.get("action_request_id") == "accepted" and e.get("ok") is True for e in emitted)
+    assert not any(e.get("badge") == "ARMED" for e in emitted)
+
+
+def test_save_ack_is_emitted_only_after_native_save(monkeypatch):
+    import orchestrator_messages
+    bridge, emitted, sent = _make_recovery_bridge()
+    bridge.handle({"type": "recovery_discard"})
+    trace = []
+    def save(config):
+        trace.append("persisted")
+        return config
+    monkeypatch.setattr(orchestrator_messages, "save_config", save)
+    original = bridge.emit
+    def emit(event):
+        if event.get("kind") == "action_ack":
+            assert trace == ["persisted"]
+        original(event)
+    bridge.emit = emit
+    bridge.handle({"type": "set_config", "action_request_id": "save-1", "config": {"project_goal": "test"}})
+    assert any(e.get("kind") == "action_ack" and e.get("action_request_id") == "save-1" and e.get("ok") is True for e in emitted)
