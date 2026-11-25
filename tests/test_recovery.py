@@ -772,3 +772,64 @@ def test_planning_refuses_active_work_approvals_pending_sends_and_mismatched_pro
         assert bridge.active_provider == "chatgpt"
         assert bridge.lifecycle != "planning"
         assert sent == []
+
+
+def test_safety_warning_cancels_pending_send_and_ignores_late_ack():
+    from unittest.mock import Mock
+
+    bridge, emitted, sent = _make_recovery_bridge()
+    bridge.handle({"type": "recovery_discard"})
+    bridge.lifecycle = "planning"
+    bridge.status = "waiting_llm"
+    bridge.paused = False
+    bridge.active_provider = "glm"
+    bridge.telegram = Mock()
+    timer = Mock()
+    bridge.pending_send_timer = timer
+
+    bridge.handle({"type": "provider_safety_signal", "payload": {
+        "provider": "glm", "kind": "auth_challenge", "text": "Security verification",
+    }})
+    timer.cancel.assert_called_once()
+    assert bridge.pending_send_timer is None
+    assert bridge.paused is True
+    assert bridge.lifecycle == "paused"
+    assert bridge.provider_guard is True
+    assert bridge.budget.public(bridge.config)["cooldown_until"] == "manual"
+
+    for message in (
+        {"type": "chat_send_ack", "ok": True, "submitted": True},
+        {"type": "chat_send_ack", "ok": False},
+        {"type": "chat_response_timeout"},
+        {"type": "resume"},
+        {"type": "build_controller_prompt", "provider": "glm"},
+        {"type": "change_course", "provider": "glm"},
+        {"type": "finish_project", "provider": "glm"},
+    ):
+        bridge.handle(message)
+        assert bridge.status == "provider_guard"
+        assert bridge.paused is True
+        assert bridge.provider_guard is True
+
+    assert sent == []
+
+
+def test_unknown_response_timeout_pauses_without_retry():
+    from unittest.mock import Mock
+
+    bridge, emitted, sent = _make_recovery_bridge()
+    bridge.handle({"type": "recovery_discard"})
+    bridge.lifecycle = "planning"
+    bridge.status = "waiting_llm"
+    bridge.paused = False
+    timer = Mock()
+    bridge.pending_send_timer = timer
+
+    bridge.handle({"type": "chat_response_timeout"})
+
+    timer.cancel.assert_called_once()
+    assert bridge.pending_send_timer is None
+    assert bridge.lifecycle == "paused"
+    assert bridge.paused is True
+    assert bridge.status == "paused"
+    assert sent == []
