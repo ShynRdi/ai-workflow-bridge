@@ -847,3 +847,40 @@ print(json.dumps({
     assert final[
         "events"
     ] == []
+
+
+def test_discard_pause_late_ack_and_restart_stays_paused(tmp_path):
+    home = tmp_path / "bridge-home"
+    run_process(r'''
+from orchestrator import Orchestrator
+bridge = Orchestrator(lambda _: None)
+bridge.lifecycle = "planning"
+bridge.status = "waiting_llm"
+bridge.current_step = "done"
+bridge.paused = False
+bridge._persist_runtime_state()
+''', home)
+    run_process(r'''
+from orchestrator import Orchestrator
+events = []
+bridge = Orchestrator(events.append)
+assert bridge.lifecycle == "recovery_required"
+bridge.handle({"type": "recovery_discard"})
+bridge.handle({"type": "pause"})
+bridge.handle({"type": "chat_send_ack", "ok": True, "submitted": True})
+bridge.handle({"type": "chat_response_timeout"})
+assert bridge.lifecycle == bridge.status == "paused"
+assert bridge.current_step == "Workflow paused by user"
+assert not any(e.get("kind") == "send_to_llm" for e in events)
+''', home)
+    final = read_json_process(r'''
+import json
+from orchestrator import Orchestrator
+events = []
+bridge = Orchestrator(events.append)
+print(json.dumps({"state": bridge.state(), "events": events}))
+''', home)
+    assert final["state"]["lifecycle"] == "paused"
+    assert final["state"]["status"] == "paused"
+    assert final["state"]["recovery"] is None
+    assert final["events"] == []
