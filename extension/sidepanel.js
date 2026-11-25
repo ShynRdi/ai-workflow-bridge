@@ -25,8 +25,18 @@ function updateProviderCard() {
   $("providerName").textContent = provider.name; $("providerStatus").textContent = provider.status.toUpperCase();
   const notes = { stable: "Stable adapter. Still stops on provider security/rate-limit signals.", beta: "Beta web adapter: selectors can change when the provider updates its UI.", experimental: "Experimental adapter: verify the first few turns manually before long runs." };
   $("providerSafetyNote").textContent = `${notes[provider.status] || notes.beta} The Bridge never automates login or exports your session.`;
-  $("activeProvider").textContent = provider.name.toUpperCase().slice(0, 13);
-  const model = $("modelLabel")?.value?.trim(); $("providerDetail").textContent = model || ($("providerAuto").checked ? "Auto-detect active tab" : `${provider.status} adapter`);
+  const lifecycle = lastState.lifecycle || lastState.status || "setup";
+  const runtime = lastState.active_provider_name;
+  const passive = ["setup", "idle", "paused", "complete", "recovery_required", "budget_exhausted"].includes(lifecycle);
+  const model = $("modelLabel")?.value?.trim();
+  if (runtime && !passive) {
+    $("activeProvider").textContent = runtime.toUpperCase().slice(0, 13);
+    $("providerDetail").textContent = "Runtime provider · selected: " + provider.name;
+  } else {
+    $("activeProvider").textContent = provider.name.toUpperCase().slice(0, 13);
+    const selection = $("providerAuto").checked ? "Auto-detect active tab" : "Selected · " + (model || provider.status + " adapter");
+    $("providerDetail").textContent = runtime && lifecycle !== "setup" ? selection + " · last runtime: " + runtime : selection;
+  }
 }
 async function providerForActiveTab() { const tabs = await chrome.tabs.query({ active: true, currentWindow: true }); const tab = tabs[0]; if (!tab?.url) return null; try { return utils.detectProvider(new URL(tab.url).hostname); } catch { return null; } }
 async function effectiveProvider() { if (!$("providerAuto").checked) return selectedProvider(); const p = await providerForActiveTab(); if (!p) throw new Error("The active tab is not a supported LLM. Open one of the supported web LLMs first."); return p; }
@@ -692,7 +702,7 @@ function handleEvent(event) { if (!event) return; if (event.kind === "host_statu
       $("hostStatusDetail").textContent = event.text || "Native Messaging";
       addLog(event.connected ? "KAPOW" : "UH-OH", event.text || "Host status changed");
     }
-  } else if (event.kind === "execution_diagnostics_result") { const d = event.diagnostics || {}; $("executionDiagnosticsSummary").textContent = d.summary || `Docker readiness: ${d.readiness?.summary || "unknown"}; mode: ${d.mode || "unknown"}.`; $("executionReadiness").textContent = d.readiness?.summary || d.summary || "Unknown"; addLog("EXECUTION", $("executionDiagnosticsSummary").textContent); } else if (event.kind === "state") { const state = event.state || {}; lastState = state; const lifecycle = state.lifecycle || state.status || "setup"; $("runStatus").textContent = String(lifecycle).replaceAll("_", " ").toUpperCase(); $("runStatusDetail").textContent = state.current_step || "No active workflow"; fillConfig(state.config || {}); fillBudget(state.budget || {}, state.config || {}); renderCheckpoint(state); renderRecovery(state); renderStageReview(state.project_state || {}); renderPolicyProfile(state.project_state || {}, state); renderExecution(state.project_state || {}, state); setLifecycleButtons(state); if (state.active_provider_name) { $("activeProvider").textContent = state.active_provider_name.toUpperCase().slice(0,13); $("providerDetail").textContent = "active browser adapter"; } } else if (event.kind === "recovery_resolved") {
+  } else if (event.kind === "execution_diagnostics_result") { const d = event.diagnostics || {}; $("executionDiagnosticsSummary").textContent = d.summary || `Docker readiness: ${d.readiness?.summary || "unknown"}; mode: ${d.mode || "unknown"}.`; $("executionReadiness").textContent = d.readiness?.summary || d.summary || "Unknown"; addLog("EXECUTION", $("executionDiagnosticsSummary").textContent); } else if (event.kind === "state") { const state = event.state || {}; lastState = state; const lifecycle = state.lifecycle || state.status || "setup"; $("runStatus").textContent = String(lifecycle).replaceAll("_", " ").toUpperCase(); $("runStatusDetail").textContent = state.current_step || "No active workflow"; fillConfig(state.config || {}); fillBudget(state.budget || {}, state.config || {}); renderCheckpoint(state); renderRecovery(state); renderStageReview(state.project_state || {}); renderPolicyProfile(state.project_state || {}, state); renderExecution(state.project_state || {}, state); setLifecycleButtons(state); } else if (event.kind === "recovery_resolved") {
     $("recoveryPanel")?.classList.add("hidden");
     addLog(
       "RECOVERED",
