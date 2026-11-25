@@ -844,8 +844,16 @@ assert.equal(get("providerStatus").textContent, "BETA");
 get("providerAuto").checked = true;
 get("providerAuto").dispatchEvent(new Event("change"));
 assert.equal(get("providerDetail").textContent, "Auto-detect active tab");
+get("providerAuto").checked = false;
+get("providerAuto").dispatchEvent(new Event("change"));
 get("modelLabel").value = "GLM test model";
 get("modelLabel").dispatchEvent(new Event("input"));
-assert.equal(get("providerDetail").textContent, "GLM test model");
+assert.equal(get("providerDetail").textContent, "Selected · GLM test model");
+vm.runInContext('lastState = { lifecycle: "paused", active_provider_name: "ChatGPT" }; updateProviderCard();', context);
+assert.equal(get("activeProvider").textContent, "Z.AI / GLM");
+assert.equal(get("providerDetail").textContent, "Selected · GLM test model · last runtime: ChatGPT");
+vm.runInContext('lastState = { lifecycle: "planning", active_provider_name: "Z.ai / GLM" }; updateProviderCard();', context);
+assert.equal(get("activeProvider").textContent, "Z.AI / GLM");
+assert.equal(get("providerDetail").textContent, "Runtime provider · selected: Z.ai / GLM");
 """
     subprocess.run(["node", "-e", script, str(EXT)], check=True)
