@@ -7,6 +7,7 @@ import json
 import re
 import shlex
 import shutil
+import subprocess
 import sys
 import uuid
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -67,6 +68,12 @@ def prepare(root: Path) -> None:
         shutil.copytree(REPO / name, root / name, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
     for name in ("profile", "state", "workspace"):
         (root / name).mkdir(mode=0o700)
+    workspace = root / "workspace"
+    (workspace / "README.md").write_text("# Disposable browser lab\n", encoding="utf-8")
+    for args in (("init", "-q", "--template="), ("add", "README.md"), ("commit", "-qm", "Fixture baseline")):
+        subprocess.run(["git", "-c", "user.name=AWB Lab", "-c", "user.email=lab@example.invalid",
+                        "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null", *args],
+                       cwd=workspace, check=True, capture_output=True)
     extension = root / "extension"
     manifest = json.loads((extension / "manifest.json").read_text())
     manifest["name"] = "AWB LOCAL LAB — NOT FOR PRODUCTION"
