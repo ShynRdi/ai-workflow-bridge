@@ -271,8 +271,23 @@ class MessageMixin:
                 if not request: self.emit_event({"kind":"error","text":"Course-change request is empty."}); return
                 self.paused=False; self.lifecycle="change_review"; self.status="change_review"; self.current_step="Reviewing requested roadmap change"; self.emit_event({"kind":"step","badge":"PIVOT?","status":"change_review","text":self.current_step}); self._send_result_to_chatgpt(self.course_change_prompt(request)); return
             self.paused=False; self.lifecycle="finishing"; self.status="finishing"; self.current_step="Running project closeout and final verification"; self.emit_event({"kind":"step","badge":"CHECK!","status":"finishing","text":self.current_step}); self._send_result_to_chatgpt(self.finish_prompt()); return
-        elif msg_type=="pause": self.paused=True; self.lifecycle="paused"; self.status="paused"; self.emit_event({"kind":"step","badge":"HOLD","status":"paused","text":"Workflow paused by user."})
+        elif msg_type=="pause":
+            # Do not wait for an in-flight command or browser download.
+            # Stop subsequent work; an already started command may finish.
+            self.paused = True
+            self.lifecycle = "paused"
+            self.status = "provider_guard" if self.provider_guard else "paused"
+            timer = getattr(self, "pending_send_timer", None)
+            if timer is not None:
+                timer.cancel()
+                self.pending_send_timer = None
+            self.current_step = "Workflow paused by user"
+            self.emit_event({"kind": "step", "badge": "HOLD", "status": "paused", "text": "Workflow paused by user. No new work will be started."})
+            self.emit({"kind": "state", "state": self.state()})
         elif msg_type=="resume":
+            if getattr(self, "command_execution_active", False) or getattr(self, "download_waiters", {}):
+                self.emit_event({"kind": "error", "text": "Wait for in-flight work to finish before resuming."})
+                return
             if self.provider_guard: self.emit_event({"kind":"error","text":"Provider safety guard is active. Resolve the rate-limit/auth/security warning in the provider UI, then use RESET RUN BUDGET to explicitly start a fresh guarded session."}); return
             self.paused=False; self.lifecycle="running"; self.status="idle"; self.emit_event({"kind":"step","badge":"GO!","status":"idle","text":"Workflow resumed."})
         elif msg_type=="reset_session":
