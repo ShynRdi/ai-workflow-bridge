@@ -257,6 +257,9 @@ class MessageMixin:
                 self._send_result_to_chatgpt(self.start_prompt())
                 return
         elif msg_type in {"build_controller_prompt","change_course","finish_project"}:
+            if self.provider_guard:
+                self.emit_event({"kind": "error", "text": "Provider safety guard remains active. Automation is stopped for manual review."})
+                return
             provider=str(message.get("provider") or self.config.get("provider_id") or self.active_provider); self.active_provider=provider; self.budget.set_provider(provider); self.no_contract_recoveries=0
             if msg_type=="build_controller_prompt":
                 if self.lifecycle in {"ready_to_arm","setup","idle","protocol_error","protocol_blocked","paused"}:
