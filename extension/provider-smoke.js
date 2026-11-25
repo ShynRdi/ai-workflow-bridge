@@ -74,7 +74,7 @@
       provider = await grantProviderAccess({ quiet: true });
       await saveProject({ log: false });
       const tab = await findProviderTab(provider); if (!tab?.id) throw new Error(`Open ${provider.name} in a tab and log in yourself first.`);
-      const ping = await ensureBridge(tab.id, provider); if (!ping.composerFound) throw new Error(`${provider.name} composer was not detected.`);
+      const ping = await ensureBridge(tab.id, provider); if (ping.safety) throw new Error(`${provider.name} is showing an account-safety warning. Smoke test stopped.`); if (!ping.composerFound) throw new Error(`${provider.name} composer was not detected.`);
       const before = await inspectProviderDom(tab.id, provider); if (before.safety) throw new Error(`${provider.name} is showing a ${before.safety} safety/account warning. Smoke test stopped.`);
       addLog("TEST", `${provider.name}: one-turn adapter smoke test started. No retries or fallback.`);
       const sent = await chrome.tabs.sendMessage(tab.id, { type: "SEND_TO_LLM", payload: { text: PROMPT, submit: true } });
@@ -84,7 +84,7 @@
         await sleep(1000);
         const health = await chrome.tabs.sendMessage(tab.id, { type: "BRIDGE_PING" });
         const snapshot = await inspectProviderDom(tab.id, provider);
-        if (snapshot.safety) throw new Error(`${provider.name} raised ${snapshot.safety}; no retry was attempted.`);
+        if (!health?.ok || health.safety || snapshot.safety) throw new Error(`${provider.name} safety or health check failed; no retry was attempted.`);
         if (snapshot.assistantCount > before.assistantCount && !health?.generating) {
           const markerFound = snapshot.lastText.includes("AWB_SMOKE_OK");
           if (!markerFound) throw new Error(`${provider.name} returned a response, but the expected AWB_SMOKE_OK marker was not captured.`);
